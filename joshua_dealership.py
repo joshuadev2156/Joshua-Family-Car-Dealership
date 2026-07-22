@@ -1,0 +1,3249 @@
+#!/usr/bin/env python3
+"""
+╔══════════════════════════════════════════════════════════════╗
+║     JOSHUA & FAMILY CAR DEALERSHIP — FULL STACK APP          ║
+║     Single-file: Python Flask backend + HTML/CSS/JS frontend  ║
+║                                                               ║
+║  USAGE:                                                       ║
+║    pip install Flask PyJWT Werkzeug openpyxl reportlab        ║
+║    python3 joshua_dealership.py                               ║
+║                                                               ║
+║  OPEN:  http://localhost:5000                                  ║
+║  API:   http://localhost:5000/api                              ║
+║  LOGIN: kamadijoshua057@gmail.com / Admin@1234                  ║
+╚══════════════════════════════════════════════════════════════╝
+"""
+"""
+====================================================
+ Joshua & Family Car Dealership — Flask REST API
+ Full-stack backend with JWT auth, CRUD, reports
+====================================================
+"""
+
+import os, json, uuid, hashlib, hmac, base64, re, io
+from datetime import datetime, timedelta, date
+from functools import wraps
+from flask import Flask, request, jsonify, g, send_file
+import jwt
+from werkzeug.security import generate_password_hash, check_password_hash
+
+# ─── APP SETUP ───────────────────────────────────────
+app = Flask(__name__)
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'joshua-family-dealership-secret-2024')
+app.config['JWT_EXPIRY_HOURS'] = int(os.getenv('JWT_EXPIRY_HOURS', 168))  # 7 days
+
+# ─── IN-MEMORY DATABASE (swap with PostgreSQL via psycopg2) ──
+DB = {
+    "roles": [
+        {"id": "r1", "name": "super_admin",       "permissions": ["*"]},
+        {"id": "r2", "name": "admin",             "permissions": ["vehicles.*","customers.*","sales.*","reports.*","users.*"]},
+        {"id": "r3", "name": "sales_manager",     "permissions": ["vehicles.read","customers.*","sales.*","leads.*","test_drives.*","reports.read"]},
+        {"id": "r4", "name": "salesperson",       "permissions": ["vehicles.read","customers.read","leads.*","test_drives.*","sales.create"]},
+        {"id": "r5", "name": "inventory_manager", "permissions": ["vehicles.*","service_records.*"]},
+        {"id": "r6", "name": "accountant",        "permissions": ["sales.read","payments.*","reports.*","financing.*"]},
+        {"id": "r7", "name": "customer",          "permissions": ["vehicles.read","wishlist.*","test_drives.create","leads.create"]},
+    ],
+    "users": [
+        {
+            "id": "u1", "role_id": "r1", "first_name": "Joshua", "last_name": "kamadi",
+            "email": "kamadijoshua057@gmail.com", "phone": "+254715187321",
+            "password_hash": generate_password_hash("Admin@1234"),
+            "is_active": True, "email_verified": True,
+            "last_login": None, "created_at": datetime.utcnow().isoformat()
+        },
+        {
+            "id": "u2", "role_id": "r3", "first_name": "Johnson", "last_name": "Andiva",
+            "email": "sarah@joshuacars.co.ke", "phone": "+254700123457",
+            "password_hash": generate_password_hash("Admin@1234"),
+            "is_active": True, "email_verified": True,
+            "last_login": None, "created_at": datetime.utcnow().isoformat()
+        },
+        {
+            "id": "u3", "role_id": "r4", "first_name": "Peter", "last_name": "Kamau",
+            "email": "peter@joshuacars.co.ke", "phone": "+254700123458",
+            "password_hash": generate_password_hash("Admin@1234"),
+            "is_active": True, "email_verified": True,
+            "last_login": None, "created_at": datetime.utcnow().isoformat()
+        },
+    ],
+    "customers": [
+        {"id": "c1", "first_name": "Amina", "last_name": "Kariuki", "email": "amina@gmail.com", "phone": "+254722001234", "id_number": "12345678", "city": "Mombasa", "status": "active", "notes": "", "created_at": datetime.utcnow().isoformat()},
+        {"id": "c2", "first_name": "James", "last_name": "Mwangi",  "email": "james@email.com",  "phone": "+254733002345", "id_number": "23456789", "city": "Nairobi",  "status": "active", "notes": "", "created_at": datetime.utcnow().isoformat()},
+        {"id": "c3", "first_name": "Fatuma","last_name": "Odhiambo","email": "fatuma@gmail.com", "phone": "+254700003456", "id_number": "34567890", "city": "Mombasa", "status": "active", "notes": "", "created_at": datetime.utcnow().isoformat()},
+        {"id": "c4", "first_name": "David", "last_name": "Njoroge", "email": "david@corp.ke",    "phone": "+254711004567", "id_number": "45678901", "city": "Kisumu",  "status": "active", "notes": "", "created_at": datetime.utcnow().isoformat()},
+        {"id": "c5", "first_name": "Grace", "last_name": "Wambua",  "email": "grace@gmail.com",  "phone": "+254720005678", "id_number": "56789012", "city": "Mombasa", "status": "active", "notes": "", "created_at": datetime.utcnow().isoformat()},
+    ],
+    "vehicles": [
+        {"id": "v1", "vin": "JT3HN87R7X4051001", "make": "Toyota",       "model": "Land Cruiser",  "year": 2023, "color": "Pearl White",    "mileage": 12000, "price": 8500000, "cost_price": 7200000, "fuel_type": "diesel",  "transmission": "automatic", "engine_size": "4.5L V8",      "body_type": "SUV",    "drive_type": "4WD", "doors": 5, "seats": 7, "condition": "used", "status": "available", "description": "Stunning 2023 Land Cruiser in immaculate condition.", "features": ["Leather Seats","Sunroof","Navigation","Rear Camera","Cruise Control"], "views_count": 142, "featured": True, "added_by": "u1", "created_at": "2024-01-15T08:00:00"},
+        {"id": "v2", "vin": "WDC1660241A123002", "make": "Mercedes-Benz", "model": "GLE 350",       "year": 2022, "color": "Obsidian Black",  "mileage": 28000, "price": 7800000, "cost_price": 6500000, "fuel_type": "petrol",  "transmission": "automatic", "engine_size": "2.0L Turbo",   "body_type": "SUV",    "drive_type": "AWD", "doors": 5, "seats": 5, "condition": "used", "status": "available", "description": "Luxurious Mercedes GLE 350 with full optional extras.", "features": ["Burmester Sound","360 Camera","Air Suspension","Heated Seats"], "views_count": 98,  "featured": True,  "added_by": "u1", "created_at": "2024-01-20T08:00:00"},
+        {"id": "v3", "vin": "5J6RW2H53LA000003", "make": "Honda",         "model": "CR-V",          "year": 2023, "color": "Lunar Silver",    "mileage": 8500,  "price": 2900000, "cost_price": 2400000, "fuel_type": "petrol",  "transmission": "automatic", "engine_size": "1.5L Turbo",   "body_type": "SUV",    "drive_type": "AWD", "doors": 5, "seats": 5, "condition": "new",  "status": "available", "description": "Brand new 2023 Honda CR-V with Honda Sensing safety suite.", "features": ["Honda Sensing","Apple CarPlay","Heated Seats","Power Tailgate"], "views_count": 76,  "featured": True,  "added_by": "u2", "created_at": "2024-02-01T08:00:00"},
+        {"id": "v4", "vin": "5UXCR6C04N9L00004", "make": "BMW",           "model": "X5 xDrive40i",  "year": 2022, "color": "Carbon Black",    "mileage": 35000, "price": 5500000, "cost_price": 4600000, "fuel_type": "petrol",  "transmission": "automatic", "engine_size": "3.0L I6",      "body_type": "SUV",    "drive_type": "AWD", "doors": 5, "seats": 5, "condition": "used", "status": "reserved", "description": "Powerful BMW X5 with xDrive all-wheel drive.", "features": ["M Sport Package","Panoramic Sunroof","Harman Kardon","iDrive 7"], "views_count": 87,  "featured": False, "added_by": "u1", "created_at": "2024-02-10T08:00:00"},
+        {"id": "v5", "vin": "MR0GX3CD60P000005", "make": "Toyota",        "model": "Hilux",         "year": 2023, "color": "Super White",     "mileage": 5000,  "price": 3100000, "cost_price": 2600000, "fuel_type": "diesel",  "transmission": "manual",    "engine_size": "2.8L GD6",     "body_type": "Pickup", "drive_type": "4WD", "doors": 4, "seats": 5, "condition": "new",  "status": "available", "description": "Tough and reliable Toyota Hilux Revo.", "features": ["Hard Tonneau Cover","Reverse Camera","Touchscreen","4WD Lock"], "views_count": 63,  "featured": False, "added_by": "u2", "created_at": "2024-02-15T08:00:00"},
+        {"id": "v6", "vin": "JTEBU5JR3C5070006", "make": "Toyota",        "model": "Prado TXL",     "year": 2022, "color": "Silver Metallic", "mileage": 42000, "price": 4200000, "cost_price": 3500000, "fuel_type": "diesel",  "transmission": "automatic", "engine_size": "3.0L 1KD",     "body_type": "SUV",    "drive_type": "4WD", "doors": 5, "seats": 7, "condition": "used", "status": "available", "description": "Well-maintained Toyota Prado TXL with 7 seats.", "features": ["7 Seats","Leather Seats","Electric Sunroof","Navigation"], "views_count": 119, "featured": True,  "added_by": "u1", "created_at": "2024-03-01T08:00:00"},
+        {"id": "v7", "vin": "WA1LAAF77JD000007", "make": "Audi",          "model": "Q7 3.0 TDI",    "year": 2021, "color": "Daytona Grey",    "mileage": 55000, "price": 6200000, "cost_price": 5100000, "fuel_type": "diesel",  "transmission": "automatic", "engine_size": "3.0L TDI V6",  "body_type": "SUV",    "drive_type": "AWD", "doors": 5, "seats": 7, "condition": "used", "status": "available", "description": "Sophisticated Audi Q7 with Quattro all-wheel drive.", "features": ["Quattro AWD","Virtual Cockpit","MMI Plus","B&O Sound"], "views_count": 54,  "featured": False, "added_by": "u1", "created_at": "2024-03-10T08:00:00"},
+        {"id": "v8", "vin": "6FPPX8DE5NL000008", "make": "Ford",          "model": "Ranger Wildtrak","year": 2023, "color": "Race Red",        "mileage": 3000,  "price": 2750000, "cost_price": 2300000, "fuel_type": "diesel",  "transmission": "automatic", "engine_size": "2.0L Bi-Turbo","body_type": "Pickup", "drive_type": "4WD", "doors": 4, "seats": 5, "condition": "new",  "status": "available", "description": "The all-new Ford Ranger Wildtrak with SYNC 4.", "features": ["SYNC 4","Ford Co-Pilot","Wireless CarPlay","LED Lights"], "views_count": 41,  "featured": False, "added_by": "u2", "created_at": "2024-03-20T08:00:00"},
+        {"id": "v9", "vin": "JTMDJREV20D000009", "make": "Toyota",        "model": "RAV4 Hybrid",   "year": 2022, "color": "Magnetic Grey",   "mileage": 31000, "price": 3800000, "cost_price": 3200000, "fuel_type": "hybrid",  "transmission": "automatic", "engine_size": "2.5L Hybrid",  "body_type": "SUV",    "drive_type": "AWD", "doors": 5, "seats": 5, "condition": "used", "status": "available", "description": "Efficient Toyota RAV4 Hybrid. Fuel economy 6L/100km.", "features": ["Hybrid AWD","Toyota Safety Sense","HUD","JBL Audio"], "views_count": 92,  "featured": True,  "added_by": "u1", "created_at": "2024-04-01T08:00:00"},
+    ],
+    "vehicle_images": [
+        {"id": "i1", "vehicle_id": "v1", "url": "https://images.unsplash.com/photo-1594736797933-d0501ba2fe65?w=800&q=80", "is_primary": True,  "sort_order": 0},
+        {"id": "i2", "vehicle_id": "v2", "url": "https://images.unsplash.com/photo-1618843479313-40f8afb4b4d8?w=800&q=80", "is_primary": True,  "sort_order": 0},
+        {"id": "i3", "vehicle_id": "v3", "url": "https://images.unsplash.com/photo-1533473359331-0135ef1b58bf?w=800&q=80", "is_primary": True,  "sort_order": 0},
+        {"id": "i4", "vehicle_id": "v4", "url": "https://images.unsplash.com/photo-1555215695-3004980ad54e?w=800&q=80", "is_primary": True,  "sort_order": 0},
+        {"id": "i5", "vehicle_id": "v5", "url": "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=800&q=80", "is_primary": True,  "sort_order": 0},
+        {"id": "i6", "vehicle_id": "v6", "url": "https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?w=800&q=80", "is_primary": True,  "sort_order": 0},
+        {"id": "i7", "vehicle_id": "v7", "url": "https://images.unsplash.com/photo-1606664515524-ed2f786a0bd6?w=800&q=80", "is_primary": True,  "sort_order": 0},
+        {"id": "i8", "vehicle_id": "v8", "url": "https://images.unsplash.com/photo-1609752099082-0e46a0ef3f5d?w=800&q=80", "is_primary": True,  "sort_order": 0},
+        {"id": "i9", "vehicle_id": "v9", "url": "https://images.unsplash.com/photo-1549317661-bd32c8ce0db2?w=800&q=80", "is_primary": True,  "sort_order": 0},
+    ],
+    "sales": [
+        {"id": "s1", "invoice_number": "INV-2024-0001", "customer_id": "c1", "vehicle_id": "v6", "salesperson_id": "u3", "sale_price": 4200000, "discount": 0, "tax_amount": 0, "total_amount": 4200000, "payment_method": "bank_loan",      "payment_status": "paid",    "amount_paid": 4200000, "balance": 0,      "sale_date": "2024-11-01", "notes": "",       "created_at": "2024-11-01T10:00:00"},
+        {"id": "s2", "invoice_number": "INV-2024-0002", "customer_id": "c2", "vehicle_id": "v2", "salesperson_id": "u3", "sale_price": 7800000, "discount": 0, "tax_amount": 0, "total_amount": 7800000, "payment_method": "cash",           "payment_status": "paid",    "amount_paid": 7800000, "balance": 0,      "sale_date": "2024-11-10", "notes": "",       "created_at": "2024-11-10T10:00:00"},
+        {"id": "s3", "invoice_number": "INV-2024-0003", "customer_id": "c3", "vehicle_id": "v3", "salesperson_id": "u3", "sale_price": 2900000, "discount": 0, "tax_amount": 0, "total_amount": 2900000, "payment_method": "mpesa",          "payment_status": "partial", "amount_paid": 1450000, "balance": 1450000,"sale_date": "2024-11-20", "notes": "HP plan", "created_at": "2024-11-20T10:00:00"},
+        {"id": "s4", "invoice_number": "INV-2024-0004", "customer_id": "c4", "vehicle_id": "v4", "salesperson_id": "u2", "sale_price": 5500000, "discount": 0, "tax_amount": 0, "total_amount": 5500000, "payment_method": "hire_purchase",  "payment_status": "partial", "amount_paid": 1100000, "balance": 4400000,"sale_date": "2024-11-28", "notes": "HP 60m", "created_at": "2024-11-28T10:00:00"},
+        {"id": "s5", "invoice_number": "INV-2024-0005", "customer_id": "c5", "vehicle_id": "v5", "salesperson_id": "u3", "sale_price": 3100000, "discount": 0, "tax_amount": 0, "total_amount": 3100000, "payment_method": "bank_loan",      "payment_status": "paid",    "amount_paid": 3100000, "balance": 0,      "sale_date": "2024-12-01", "notes": "",       "created_at": "2024-12-01T10:00:00"},
+    ],
+    "payments": [
+        {"id": "p1", "sale_id": "s1", "amount": 4200000, "method": "bank_loan",     "reference": "KCB-TXN-001", "mpesa_receipt": None, "status": "completed", "paid_at": "2024-11-01T10:00:00", "notes": "Full payment"},
+        {"id": "p2", "sale_id": "s2", "amount": 7800000, "method": "cash",          "reference": "CASH-002",    "mpesa_receipt": None, "status": "completed", "paid_at": "2024-11-10T10:00:00", "notes": "Full cash payment"},
+        {"id": "p3", "sale_id": "s3", "amount": 1450000, "method": "mpesa",         "reference": "QKZ001234",   "mpesa_receipt": "QKZ001234", "status": "completed", "paid_at": "2024-11-20T10:00:00", "notes": "Deposit via M-Pesa"},
+        {"id": "p4", "sale_id": "s4", "amount": 1100000, "method": "hire_purchase", "reference": "HP-004",      "mpesa_receipt": None, "status": "completed", "paid_at": "2024-11-28T10:00:00", "notes": "Down payment"},
+    ],
+    "leads": [
+        {"id": "l1", "name": "Ali Hassan",    "phone": "+254733006789", "email": "ali@gmail.com",   "vehicle_id": "v1", "source": "website",   "priority": "hot",  "status": "new",        "message": "Interested in Land Cruiser", "assigned_to": "u3", "follow_up_date": None, "notes": "", "created_at": "2024-12-01T08:00:00"},
+        {"id": "l2", "name": "Mary Kamau",    "phone": "+254700007890", "email": "mary@gmail.com",  "vehicle_id": "v3", "source": "walk_in",   "priority": "warm", "status": "contacted",   "message": "Looking for a family car",  "assigned_to": "u3", "follow_up_date": None, "notes": "Called twice", "created_at": "2024-12-02T08:00:00"},
+        {"id": "l3", "name": "Peter Otieno",  "phone": "+254711008901", "email": "peter@gmail.com", "vehicle_id": "v4", "source": "whatsapp",  "priority": "cold", "status": "new",        "message": "Price inquiry for BMW X5",  "assigned_to": None, "follow_up_date": None, "notes": "", "created_at": "2024-12-03T08:00:00"},
+        {"id": "l4", "name": "Zainab Omar",   "phone": "+254722009012", "email": "zainab@test.com", "vehicle_id": "v9", "source": "referral",  "priority": "warm", "status": "qualified",  "message": "RAV4 Hybrid interest",      "assigned_to": "u2", "follow_up_date": None, "notes": "Ready to buy", "created_at": "2024-12-04T08:00:00"},
+    ],
+    "test_drives": [
+        {"id": "td1", "customer_id": "c1", "vehicle_id": "v1", "salesperson_id": "u3", "scheduled_date": "2024-12-10", "scheduled_time": "10:00", "status": "confirmed",  "notes": "", "feedback": None, "rating": None, "created_at": "2024-12-05T08:00:00"},
+        {"id": "td2", "customer_id": "c2", "vehicle_id": "v3", "salesperson_id": "u3", "scheduled_date": "2024-12-11", "scheduled_time": "14:00", "status": "completed",  "notes": "", "feedback": "Great ride", "rating": 5,    "created_at": "2024-12-06T08:00:00"},
+        {"id": "td3", "customer_id": "c4", "vehicle_id": "v4", "salesperson_id": "u3", "scheduled_date": "2024-12-12", "scheduled_time": "11:30", "status": "confirmed",  "notes": "", "feedback": None, "rating": None, "created_at": "2024-12-07T08:00:00"},
+    ],
+    "service_records": [
+        {"id": "sr1", "vehicle_id": "v3", "customer_id": "c3", "mechanic_id": "u3", "service_type": "Oil Change",   "description": "Full oil change and filter replacement", "cost": 8500,   "status": "completed",  "scheduled_date": "2024-11-15", "completed_date": "2024-11-15", "notes": "", "created_at": "2024-11-14T08:00:00"},
+        {"id": "sr2", "vehicle_id": "v1", "customer_id": "c1", "mechanic_id": "u3", "service_type": "Full Service", "description": "60,000km full service",                  "cost": 45000,  "status": "scheduled",  "scheduled_date": "2024-12-20", "completed_date": None,         "notes": "", "created_at": "2024-12-01T08:00:00"},
+    ],
+    "financing_applications": [
+        {"id": "fa1", "customer_id": "c3", "vehicle_id": "v3", "full_name": "Fatuma Odhiambo", "id_number": "34567890", "phone": "+254700003456", "email": "fatuma@gmail.com", "employment_status": "employed", "monthly_income": 85000, "financing_type": "hire_purchase", "loan_amount": 1450000, "down_payment": 1450000, "term_months": 24, "status": "approved", "notes": "Approved by KCB", "created_at": "2024-11-18T08:00:00"},
+        {"id": "fa2", "customer_id": "c4", "vehicle_id": "v7", "full_name": "David Njoroge",   "id_number": "45678901", "phone": "+254711004567", "email": "david@corp.ke",    "employment_status": "business_owner", "monthly_income": 250000, "financing_type": "bank_loan",      "loan_amount": 4960000, "down_payment": 1240000, "term_months": 48, "status": "pending",  "notes": "",                 "created_at": "2024-12-02T08:00:00"},
+    ],
+    "notifications": [],
+    "wishlists": [],
+    "activity_logs": [],
+}
+
+# ─── HELPERS ─────────────────────────────────────────
+def gen_id(prefix=""):
+    return prefix + str(uuid.uuid4())[:8]
+
+def now_iso():
+    return datetime.utcnow().isoformat()
+
+def find(collection, **kwargs):
+    return [r for r in DB[collection] if all(r.get(k) == v for k, v in kwargs.items())]
+
+def find_one(collection, **kwargs):
+    results = find(collection, **kwargs)
+    return results[0] if results else None
+
+def get_role(role_id):
+    return find_one("roles", id=role_id)
+
+def get_user_role(user):
+    role = get_role(user.get("role_id"))
+    return role.get("name") if role else None
+
+def success(data=None, message=None, code=200, **kwargs):
+    resp = {"success": True}
+    if message: resp["message"] = message
+    if data is not None: resp["data"] = data
+    resp.update(kwargs)
+    return jsonify(resp), code
+
+def error(message, code=400, errors=None):
+    resp = {"success": False, "message": message}
+    if errors: resp["errors"] = errors
+    return jsonify(resp), code
+
+def paginate(items, page=1, limit=12):
+    page, limit = int(page), int(limit)
+    total = len(items)
+    start = (page - 1) * limit
+    end = start + limit
+    return {
+        "data": items[start:end],
+        "pagination": {
+            "total": total, "page": page, "limit": limit,
+            "pages": max(1, -(-total // limit))  # ceiling division
+        }
+    }
+
+# ─── JWT MIDDLEWARE ───────────────────────────────────
+def generate_token(user_id, role_id):
+    payload = {
+        "userId": user_id,
+        "roleId": role_id,
+        "exp": datetime.utcnow() + timedelta(hours=app.config["JWT_EXPIRY_HOURS"]),
+        "iat": datetime.utcnow()
+    }
+    return jwt.encode(payload, app.config["SECRET_KEY"], algorithm="HS256")
+
+def decode_token(token):
+    return jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])
+
+def authenticate(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return error("Access token required", 401)
+        token = auth_header.split(" ")[1]
+        try:
+            payload = decode_token(token)
+            user = find_one("users", id=payload["userId"])
+            if not user or not user.get("is_active"):
+                return error("User not found or deactivated", 401)
+            g.user = user
+        except jwt.ExpiredSignatureError:
+            return error("Token expired", 401)
+        except jwt.InvalidTokenError:
+            return error("Invalid token", 401)
+        return f(*args, **kwargs)
+    return decorated
+
+def authorize(*allowed_roles):
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            role = get_user_role(g.user)
+            perms = get_role(g.user.get("role_id", "")).get("permissions", [])
+            if "*" in perms or role in allowed_roles:
+                return f(*args, **kwargs)
+            return error(f"Access denied. Required roles: {', '.join(allowed_roles)}", 403)
+        return decorated
+    return decorator
+
+def optional_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        g.user = None
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            try:
+                token = auth_header.split(" ")[1]
+                payload = decode_token(token)
+                g.user = find_one("users", id=payload["userId"])
+            except: pass
+        return f(*args, **kwargs)
+    return decorated
+
+def log_activity(action, entity_type, entity_id=None):
+    if hasattr(g, 'user') and g.user:
+        DB["activity_logs"].append({
+            "id": gen_id("al"), "user_id": g.user["id"],
+            "action": action, "entity_type": entity_type, "entity_id": entity_id,
+            "ip_address": request.remote_addr, "created_at": now_iso()
+        })
+
+# ─── CORS ─────────────────────────────────────────────
+@app.after_request
+def add_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+# ─── HEALTH ───────────────────────────────────────────
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok", "service": "Joshua & Family Car Dealership API",
+                    "version": "1.0.0", "timestamp": now_iso()})
+
+@app.route("/api")
+def api_index():
+    return jsonify({
+        "service": "Joshua & Family Car Dealership REST API",
+        "version": "1.0.0",
+        "endpoints": {
+            "auth":          "POST /api/auth/register, /api/auth/login, /api/auth/me",
+            "vehicles":      "GET|POST /api/vehicles, GET|PATCH|DELETE /api/vehicles/:id",
+            "customers":     "GET|POST /api/customers, GET|PATCH|DELETE /api/customers/:id",
+            "sales":         "GET|POST /api/sales, GET /api/sales/:id/invoice",
+            "payments":      "GET|POST /api/payments, POST /api/payments/mpesa/initiate",
+            "leads":         "GET|POST /api/leads, PATCH /api/leads/:id",
+            "test_drives":   "GET|POST /api/test-drives, PATCH /api/test-drives/:id",
+            "financing":     "GET|POST /api/financing",
+            "services":      "GET|POST /api/services",
+            "dashboard":     "GET /api/dashboard/stats",
+            "reports":       "GET /api/reports/sales?format=excel",
+            "notifications": "GET /api/notifications",
+            "users":         "GET|POST /api/users",
+        }
+    })
+
+
+# ═══════════════════════════════════════════════════════
+#  AUTH ROUTES
+# ═══════════════════════════════════════════════════════
+@app.route("/api/auth/register", methods=["POST"])
+def register():
+    d = request.get_json() or {}
+    errs = []
+    if not d.get("first_name"): errs.append({"field": "first_name", "message": "First name required"})
+    if not d.get("last_name"):  errs.append({"field": "last_name",  "message": "Last name required"})
+    if not d.get("email") or "@" not in d["email"]: errs.append({"field": "email", "message": "Valid email required"})
+    if not d.get("password") or len(d.get("password","")) < 8: errs.append({"field": "password", "message": "Password must be at least 8 characters"})
+    if errs: return error("Validation failed", 422, errs)
+
+    if find_one("users", email=d["email"].lower()):
+        return error("Email already registered", 409)
+
+    customer_role = find_one("roles", name="customer")
+    user = {
+        "id": gen_id("u"), "role_id": customer_role["id"],
+        "first_name": d["first_name"], "last_name": d["last_name"],
+        "email": d["email"].lower(), "phone": d.get("phone", ""),
+        "password_hash": generate_password_hash(d["password"]),
+        "is_active": True, "email_verified": False,
+        "last_login": None, "created_at": now_iso()
+    }
+    DB["users"].append(user)
+
+    # Create customer profile
+    DB["customers"].append({
+        "id": gen_id("c"), "user_id": user["id"],
+        "first_name": user["first_name"], "last_name": user["last_name"],
+        "email": user["email"], "phone": user["phone"],
+        "status": "active", "notes": "", "created_at": now_iso()
+    })
+
+    token = generate_token(user["id"], user["role_id"])
+    safe = {k: v for k, v in user.items() if k not in ("password_hash",)}
+    return success({"user": safe, "tokens": {"access": token}}, "Registration successful", 201)
+
+@app.route("/api/auth/login", methods=["POST"])
+def login():
+    d = request.get_json() or {}
+    errs = []
+    if not d.get("email") or "@" not in d.get("email",""): errs.append({"field":"email","message":"Valid email required"})
+    if not d.get("password"): errs.append({"field":"password","message":"Password required"})
+    if errs: return error("Validation failed", 422, errs)
+
+    user = find_one("users", email=d["email"].lower())
+    if not user: return error("Invalid email or password", 401)
+    if not user.get("is_active"): return error("Account deactivated", 403)
+    if not check_password_hash(user["password_hash"], d["password"]):
+        return error("Invalid email or password", 401)
+
+    user["last_login"] = now_iso()
+    role = get_role(user["role_id"]) or {}
+    token = generate_token(user["id"], user["role_id"])
+    safe = {k: v for k, v in user.items() if k not in ("password_hash",)}
+    safe["role_name"] = role.get("name")
+    safe["permissions"] = role.get("permissions", [])
+
+    log_activity("LOGIN", "user", user["id"])
+    return success({"user": safe, "tokens": {"access": token}}, "Login successful")
+
+@app.route("/api/auth/me", methods=["GET"])
+@authenticate
+def me():
+    user = dict(g.user)
+    role = get_role(user.get("role_id")) or {}
+    user.pop("password_hash", None)
+    user["role_name"] = role.get("name")
+    user["permissions"] = role.get("permissions", [])
+    return success(user)
+
+@app.route("/api/auth/change-password", methods=["PATCH"])
+@authenticate
+def change_password():
+    d = request.get_json() or {}
+    if not d.get("current_password") or not d.get("new_password"):
+        return error("Both current_password and new_password required")
+    if len(d["new_password"]) < 8:
+        return error("New password must be at least 8 characters")
+    user = find_one("users", id=g.user["id"])
+    if not check_password_hash(user["password_hash"], d["current_password"]):
+        return error("Current password is incorrect")
+    user["password_hash"] = generate_password_hash(d["new_password"])
+    return success(message="Password changed successfully")
+
+@app.route("/api/auth/forgot-password", methods=["POST"])
+def forgot_password():
+    # Always return success (prevent email enumeration)
+    return success(message="If this email exists, a reset link has been sent.")
+
+# ═══════════════════════════════════════════════════════
+#  VEHICLE ROUTES
+# ═══════════════════════════════════════════════════════
+def enrich_vehicle(v):
+    imgs = find("vehicle_images", vehicle_id=v["id"])
+    primary = next((i["url"] for i in imgs if i.get("is_primary")), None)
+    return {**v, "images": imgs, "primary_image": primary}
+
+@app.route("/api/vehicles", methods=["GET"])
+@optional_auth
+def get_vehicles():
+    p = request.args
+    items = list(DB["vehicles"])
+
+    # Filters
+    if p.get("status"):       items = [v for v in items if v["status"] == p["status"]]
+    if p.get("make"):         items = [v for v in items if v["make"].lower() == p["make"].lower()]
+    if p.get("model"):        items = [v for v in items if p["model"].lower() in v["model"].lower()]
+    if p.get("fuel_type"):    items = [v for v in items if v["fuel_type"] == p["fuel_type"]]
+    if p.get("transmission"): items = [v for v in items if v["transmission"] == p["transmission"]]
+    if p.get("condition"):    items = [v for v in items if v["condition"] == p["condition"]]
+    if p.get("body_type"):    items = [v for v in items if v.get("body_type","").lower() == p["body_type"].lower()]
+    if p.get("featured"):     items = [v for v in items if v.get("featured")]
+    try:
+        if p.get("year_min"): items = [v for v in items if v["year"] >= int(p["year_min"])]
+        if p.get("year_max"): items = [v for v in items if v["year"] <= int(p["year_max"])]
+    except (ValueError, TypeError): pass
+    try:
+        if p.get("price_min"): items = [v for v in items if v["price"] >= float(p["price_min"])]
+        if p.get("price_max"): items = [v for v in items if v["price"] <= float(p["price_max"])]
+    except (ValueError, TypeError): pass
+    if p.get("search"):
+        q = p["search"].lower()
+        items = [v for v in items if q in v["make"].lower() or q in v["model"].lower()
+                 or q in (v.get("description","") or "").lower() or q in (v.get("color","") or "").lower()]
+
+    # Sort
+    sort_map = {"price": "price", "year": "year", "mileage": "mileage", "views_count": "views_count"}
+    sort_key = sort_map.get(p.get("sort",""), "created_at")
+    reverse = p.get("order","DESC").upper() != "ASC"
+    try: items.sort(key=lambda v: v.get(sort_key, ""), reverse=reverse)
+    except: pass
+
+    result = paginate([enrich_vehicle(v) for v in items], p.get("page",1), p.get("limit",12))
+    return jsonify({"success": True, **result})
+
+@app.route("/api/vehicles/makes", methods=["GET"])
+def get_makes():
+    from collections import Counter
+    avail = [v["make"] for v in DB["vehicles"] if v["status"] == "available"]
+    counts = Counter(avail)
+    return success([{"make": k, "count": v} for k, v in sorted(counts.items())])
+
+@app.route("/api/vehicles/stats/summary", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","inventory_manager")
+def vehicle_stats():
+    vehicles = DB["vehicles"]
+    by_status = {}
+    for v in vehicles:
+        by_status[v["status"]] = by_status.get(v["status"], 0) + 1
+    by_make = {}
+    for v in vehicles:
+        by_make[v["make"]] = by_make.get(v["make"], 0) + 1
+    return success({
+        "totals": {
+            "total": len(vehicles),
+            "total_value": sum(v["price"] for v in vehicles),
+            "avg_price": sum(v["price"] for v in vehicles) / max(len(vehicles),1)
+        },
+        "by_status": [{"status": k, "count": v} for k,v in by_status.items()],
+        "by_make": sorted([{"make": k, "count": v} for k,v in by_make.items()], key=lambda x: -x["count"])[:10],
+        "top_viewed": sorted(vehicles, key=lambda v: v.get("views_count",0), reverse=True)[:5],
+    })
+
+@app.route("/api/vehicles/<vid>", methods=["GET"])
+@optional_auth
+def get_vehicle(vid):
+    v = find_one("vehicles", id=vid)
+    if not v: return error("Vehicle not found", 404)
+    v["views_count"] = v.get("views_count", 0) + 1
+    related = [enrich_vehicle(r) for r in DB["vehicles"] if r["make"]==v["make"] and r["id"]!=vid and r["status"]=="available"][:4]
+    return success({**enrich_vehicle(v), "related": related})
+
+@app.route("/api/vehicles", methods=["POST"])
+@authenticate
+@authorize("super_admin","admin","inventory_manager")
+def create_vehicle():
+    d = request.get_json() or {}
+    errs = []
+    if not d.get("vin"):   errs.append({"field":"vin","message":"VIN required"})
+    if not d.get("make"):  errs.append({"field":"make","message":"Make required"})
+    if not d.get("model"): errs.append({"field":"model","message":"Model required"})
+    if not d.get("price"): errs.append({"field":"price","message":"Price required"})
+    if errs: return error("Validation failed", 422, errs)
+    if find_one("vehicles", vin=d["vin"]):
+        return error("Vehicle with this VIN already exists", 409)
+
+    v = {
+        "id": gen_id("v"), "vin": d["vin"], "make": d["make"], "model": d["model"],
+        "year": int(d.get("year",2023)), "color": d.get("color",""),
+        "mileage": int(d.get("mileage",0)), "price": float(d["price"]),
+        "cost_price": float(d["cost_price"]) if d.get("cost_price") else None,
+        "fuel_type": d.get("fuel_type","petrol"), "transmission": d.get("transmission","automatic"),
+        "engine_size": d.get("engine_size",""), "body_type": d.get("body_type",""),
+        "drive_type": d.get("drive_type",""), "doors": d.get("doors",5), "seats": d.get("seats",5),
+        "condition": d.get("condition","used"), "status": d.get("status","available"),
+        "description": d.get("description",""), "features": d.get("features",[]),
+        "views_count": 0, "featured": d.get("featured",False), "added_by": g.user["id"],
+        "created_at": now_iso()
+    }
+    DB["vehicles"].append(v)
+
+    # Images
+    for i, img in enumerate(d.get("images",[])):
+        DB["vehicle_images"].append({"id": gen_id("i"), "vehicle_id": v["id"],
+                                      "url": img.get("url",""), "is_primary": i==0, "sort_order": i})
+
+    log_activity("CREATE_VEHICLE", "vehicle", v["id"])
+    return success(v, "Vehicle created successfully", 201)
+
+@app.route("/api/vehicles/<vid>", methods=["PATCH"])
+@authenticate
+@authorize("super_admin","admin","inventory_manager")
+def update_vehicle(vid):
+    v = find_one("vehicles", id=vid)
+    if not v: return error("Vehicle not found", 404)
+    d = request.get_json() or {}
+    updatable = ["make","model","year","color","mileage","price","cost_price","fuel_type",
+                 "transmission","engine_size","body_type","drive_type","doors","seats",
+                 "condition","status","description","features","featured"]
+    for k in updatable:
+        if k in d: v[k] = d[k]
+    v["updated_at"] = now_iso()
+    log_activity("UPDATE_VEHICLE", "vehicle", vid)
+    return success(v, "Vehicle updated")
+
+@app.route("/api/vehicles/<vid>", methods=["DELETE"])
+@authenticate
+@authorize("super_admin","admin")
+def delete_vehicle(vid):
+    v = find_one("vehicles", id=vid)
+    if not v: return error("Vehicle not found", 404)
+    if find("sales", vehicle_id=vid):
+        return error("Cannot delete vehicle with associated sales. Archive it instead.", 409)
+    DB["vehicles"].remove(v)
+    DB["vehicle_images"] = [i for i in DB["vehicle_images"] if i["vehicle_id"] != vid]
+    log_activity("DELETE_VEHICLE", "vehicle", vid)
+    return success(message="Vehicle deleted successfully")
+
+@app.route("/api/vehicles/<vid>/images", methods=["POST"])
+@authenticate
+@authorize("super_admin","admin","inventory_manager")
+def add_vehicle_images(vid):
+    if not find_one("vehicles", id=vid):
+        return error("Vehicle not found", 404)
+    d = request.get_json() or {}
+    images = d.get("images", [])
+    added = []
+    for i, img in enumerate(images):
+        if img.get("is_primary"):
+            for existing in DB["vehicle_images"]:
+                if existing["vehicle_id"] == vid: existing["is_primary"] = False
+        rec = {"id": gen_id("i"), "vehicle_id": vid, "url": img.get("url",""),
+               "is_primary": img.get("is_primary",False), "sort_order": i}
+        DB["vehicle_images"].append(rec)
+        added.append(rec)
+    return success(added, code=201)
+
+@app.route("/api/vehicles/<vid>/images/<iid>", methods=["DELETE"])
+@authenticate
+@authorize("super_admin","admin","inventory_manager")
+def delete_vehicle_image(vid, iid):
+    img = find_one("vehicle_images", id=iid, vehicle_id=vid)
+    if not img: return error("Image not found", 404)
+    DB["vehicle_images"].remove(img)
+    return success(message="Image deleted")
+
+# ═══════════════════════════════════════════════════════
+#  CUSTOMER ROUTES
+# ═══════════════════════════════════════════════════════
+SALES_ROLES = ("super_admin","admin","sales_manager","salesperson")
+
+def enrich_customer(c):
+    cust_sales = find("sales", customer_id=c["id"])
+    paid = [s for s in cust_sales if s["payment_status"]=="paid"]
+    return {**c, "purchase_count": len(cust_sales),
+            "total_spent": sum(s["total_amount"] for s in paid)}
+
+@app.route("/api/customers", methods=["GET"])
+@authenticate
+@authorize(*SALES_ROLES)
+def get_customers():
+    p = request.args
+    items = list(DB["customers"])
+    if p.get("search"):
+        q = p["search"].lower()
+        items = [c for c in items if q in c.get("first_name","").lower()
+                 or q in c.get("last_name","").lower()
+                 or q in (c.get("email","") or "").lower()
+                 or q in (c.get("phone","") or "").lower()]
+    if p.get("status"): items = [c for c in items if c.get("status") == p["status"]]
+    result = paginate([enrich_customer(c) for c in items], p.get("page",1), p.get("limit",20))
+    return jsonify({"success": True, **result})
+
+@app.route("/api/customers/<cid>", methods=["GET"])
+@authenticate
+@authorize(*SALES_ROLES)
+def get_customer(cid):
+    c = find_one("customers", id=cid)
+    if not c: return error("Customer not found", 404)
+    cust_sales = [dict(s, **{
+        "make": (find_one("vehicles", id=s["vehicle_id"]) or {}).get("make",""),
+        "model": (find_one("vehicles", id=s["vehicle_id"]) or {}).get("model",""),
+    }) for s in find("sales", customer_id=cid)]
+    cust_drives = [dict(td, **{
+        "make": (find_one("vehicles", id=td["vehicle_id"]) or {}).get("make",""),
+        "model": (find_one("vehicles", id=td["vehicle_id"]) or {}).get("model",""),
+    }) for td in find("test_drives", customer_id=cid)]
+    return success({**enrich_customer(c), "sales": cust_sales, "test_drives": cust_drives,
+                    "leads": find("leads", customer_id=cid)})
+
+@app.route("/api/customers", methods=["POST"])
+@authenticate
+@authorize(*SALES_ROLES)
+def create_customer():
+    d = request.get_json() or {}
+    errs = []
+    if not d.get("first_name"): errs.append({"field":"first_name","message":"Required"})
+    if not d.get("last_name"):  errs.append({"field":"last_name","message":"Required"})
+    if not d.get("phone"):      errs.append({"field":"phone","message":"Required"})
+    if errs: return error("Validation failed", 422, errs)
+    if find_one("customers", phone=d["phone"]):
+        return error("Customer with this phone already exists", 409)
+    c = {"id": gen_id("c"), "first_name": d["first_name"], "last_name": d["last_name"],
+         "email": d.get("email",""), "phone": d["phone"], "id_number": d.get("id_number",""),
+         "address": d.get("address",""), "city": d.get("city",""), "status": "active",
+         "notes": d.get("notes",""), "created_at": now_iso()}
+    DB["customers"].append(c)
+    log_activity("CREATE_CUSTOMER", "customer", c["id"])
+    return success(c, "Customer created", 201)
+
+@app.route("/api/customers/<cid>", methods=["PATCH"])
+@authenticate
+@authorize(*SALES_ROLES)
+def update_customer(cid):
+    c = find_one("customers", id=cid)
+    if not c: return error("Customer not found", 404)
+    d = request.get_json() or {}
+    for k in ["first_name","last_name","email","phone","id_number","address","city","notes","status"]:
+        if k in d: c[k] = d[k]
+    c["updated_at"] = now_iso()
+    return success(c, "Customer updated")
+
+@app.route("/api/customers/<cid>", methods=["DELETE"])
+@authenticate
+@authorize("super_admin","admin")
+def delete_customer(cid):
+    c = find_one("customers", id=cid)
+    if not c: return error("Customer not found", 404)
+    if find("sales", customer_id=cid):
+        return error("Cannot delete customer with sales history. Deactivate instead.", 409)
+    DB["customers"].remove(c)
+    return success(message="Customer deleted")
+
+@app.route("/api/customers/<cid>/notes", methods=["POST"])
+@authenticate
+@authorize(*SALES_ROLES)
+def add_customer_note(cid):
+    c = find_one("customers", id=cid)
+    if not c: return error("Customer not found", 404)
+    d = request.get_json() or {}
+    note = d.get("note","")
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    c["notes"] = (c.get("notes","") + f"\n[{timestamp}] {note}").strip()
+    return success({"id": c["id"], "notes": c["notes"]})
+
+# ═══════════════════════════════════════════════════════
+#  SALES ROUTES
+# ═══════════════════════════════════════════════════════
+invoice_counter = [len(DB["sales"])]
+
+def next_invoice():
+    invoice_counter[0] += 1
+    return f"INV-{datetime.utcnow().year}-{invoice_counter[0]:04d}"
+
+def enrich_sale(s):
+    cust = find_one("customers", id=s.get("customer_id")) or {}
+    veh  = find_one("vehicles", id=s.get("vehicle_id")) or {}
+    sp   = find_one("users", id=s.get("salesperson_id")) or {}
+    return {**s,
+            "customer_name": f"{cust.get('first_name','')} {cust.get('last_name','')}".strip(),
+            "customer_phone": cust.get("phone",""), "customer_email": cust.get("email",""),
+            "customer_address": cust.get("address",""),
+            "make": veh.get("make",""), "model": veh.get("model",""),
+            "year": veh.get("year",""), "vin": veh.get("vin",""), "color": veh.get("color",""),
+            "salesperson_name": f"{sp.get('first_name','')} {sp.get('last_name','')}".strip()}
+
+@app.route("/api/sales", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","salesperson","accountant")
+def get_sales():
+    p = request.args
+    items = list(DB["sales"])
+    if p.get("payment_status"): items = [s for s in items if s["payment_status"]==p["payment_status"]]
+    if p.get("customer_id"):    items = [s for s in items if s["customer_id"]==p["customer_id"]]
+    if p.get("search"):
+        q = p["search"].lower()
+        enriched = [enrich_sale(s) for s in items]
+        enriched = [s for s in enriched if q in s.get("invoice_number","").lower()
+                    or q in s.get("customer_name","").lower()]
+        result = paginate(enriched, p.get("page",1), p.get("limit",20))
+        return jsonify({"success": True, **result})
+    items.sort(key=lambda s: s.get("created_at",""), reverse=True)
+    result = paginate([enrich_sale(s) for s in items], p.get("page",1), p.get("limit",20))
+    return jsonify({"success": True, **result})
+
+@app.route("/api/sales/analytics/summary", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","accountant")
+def sales_analytics():
+    sales = DB["sales"]
+    now = datetime.utcnow()
+    month_sales = [s for s in sales if s.get("sale_date","")[:7] == now.strftime("%Y-%m")]
+    last_month  = [s for s in sales if s.get("sale_date","")[:7] == (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")]
+
+    # Monthly revenue last 12 months
+    monthly = {}
+    for s in sales:
+        m = s.get("sale_date","")[:7]
+        if m: monthly[m] = monthly.get(m, {"count":0,"revenue":0})
+        if m: monthly[m]["count"] += 1; monthly[m]["revenue"] += s["total_amount"]
+    monthly_list = [{"month": k, "sales_count": v["count"], "revenue": v["revenue"]}
+                    for k, v in sorted(monthly.items())[-12:]]
+
+    by_method = {}
+    for s in sales:
+        m = s.get("payment_method","unknown")
+        by_method[m] = by_method.get(m, {"count":0,"total":0})
+        by_method[m]["count"] += 1; by_method[m]["total"] += s["total_amount"]
+
+    return success({
+        "summary": {
+            "total_sales": len(month_sales),
+            "total_revenue": sum(s["total_amount"] for s in month_sales),
+            "last_month_revenue": sum(s["total_amount"] for s in last_month),
+            "avg_sale_value": sum(s["total_amount"] for s in month_sales) / max(len(month_sales),1),
+            "paid_count": len([s for s in month_sales if s["payment_status"]=="paid"]),
+            "pending_count": len([s for s in month_sales if s["payment_status"]=="pending"]),
+        },
+        "monthly_revenue": monthly_list,
+        "by_payment_method": [{"method": k, **v} for k,v in by_method.items()],
+    })
+
+@app.route("/api/sales/<sid>", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","salesperson","accountant")
+def get_sale(sid):
+    s = find_one("sales", id=sid)
+    if not s: return error("Sale not found", 404)
+    pmts = find("payments", sale_id=sid)
+    return success({**enrich_sale(s), "payments": pmts})
+
+@app.route("/api/sales", methods=["POST"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","salesperson")
+def create_sale():
+    d = request.get_json() or {}
+    errs = []
+    if not d.get("customer_id"):   errs.append({"field":"customer_id","message":"Required"})
+    if not d.get("vehicle_id"):    errs.append({"field":"vehicle_id","message":"Required"})
+    if not d.get("sale_price"):    errs.append({"field":"sale_price","message":"Required"})
+    if not d.get("payment_method"):errs.append({"field":"payment_method","message":"Required"})
+    if errs: return error("Validation failed", 422, errs)
+
+    veh = find_one("vehicles", id=d["vehicle_id"])
+    if not veh or veh["status"] != "available":
+        return error("Vehicle not available for sale", 400)
+
+    sale_price = float(d["sale_price"])
+    discount   = float(d.get("discount", 0))
+    tax        = float(d.get("tax_amount", 0))
+    total      = sale_price - discount + tax
+    paid       = float(d.get("amount_paid", 0))
+    balance    = total - paid
+    pmt_status = "paid" if paid >= total else ("partial" if paid > 0 else "pending")
+
+    s = {
+        "id": gen_id("s"), "invoice_number": next_invoice(),
+        "customer_id": d["customer_id"], "vehicle_id": d["vehicle_id"],
+        "salesperson_id": g.user["id"],
+        "sale_price": sale_price, "discount": discount, "tax_amount": tax,
+        "total_amount": total, "payment_method": d["payment_method"],
+        "payment_status": pmt_status, "amount_paid": paid, "balance": balance,
+        "notes": d.get("notes",""),
+        "sale_date": d.get("sale_date", datetime.utcnow().date().isoformat()),
+        "delivery_date": d.get("delivery_date"), "created_at": now_iso()
+    }
+    DB["sales"].append(s)
+
+    # Record payment
+    if paid > 0:
+        DB["payments"].append({
+            "id": gen_id("p"), "sale_id": s["id"], "amount": paid,
+            "method": d["payment_method"], "reference": d.get("reference",""),
+            "mpesa_receipt": None, "status": "completed",
+            "paid_at": now_iso(), "notes": f"Initial payment — {s['invoice_number']}"
+        })
+
+    # Mark vehicle sold
+    veh["status"] = "sold"
+
+    # Update customer stats
+    cust = find_one("customers", id=d["customer_id"])
+    if cust:
+        cust["total_purchases"] = cust.get("total_purchases", 0) + 1
+        cust["total_spent"] = cust.get("total_spent", 0) + total
+
+    log_activity("CREATE_SALE", "sale", s["id"])
+    return success(s, "Sale recorded successfully", 201)
+
+@app.route("/api/sales/<sid>", methods=["PATCH"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","accountant")
+def update_sale(sid):
+    s = find_one("sales", id=sid)
+    if not s: return error("Sale not found", 404)
+    d = request.get_json() or {}
+    for k in ["payment_status","delivery_date","notes"]:
+        if k in d: s[k] = d[k]
+    s["updated_at"] = now_iso()
+    return success(s, "Sale updated")
+
+@app.route("/api/sales/<sid>/invoice", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","salesperson","accountant")
+def download_invoice(sid):
+    s = find_one("sales", id=sid)
+    if not s: return error("Sale not found", 404)
+    sale = enrich_sale(s)
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.colors import HexColor, white, black
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer, HRFlowable
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.8*cm, rightMargin=1.8*cm,
+                                topMargin=1.5*cm, bottomMargin=2*cm)
+
+        deep_blue = HexColor("#0b1f3a")
+        gold = HexColor("#c9a84c")
+        light = HexColor("#f5f6f8")
+        text_mid = HexColor("#3d4f66")
+        green = HexColor("#1a6b3c")
+        red = HexColor("#c0392b")
+
+        styles = getSampleStyleSheet()
+        story = []
+
+        # Header
+        header_data = [[
+            Paragraph(f'<font color="#c9a84c" size="20"><b>JOSHUA &amp; FAMILY</b></font><br/>'
+                      f'<font color="#ffffff" size="8">CAR DEALERSHIP · MOMBASA, KENYA</font><br/>'
+                      f'<font color="#b8bcc8" size="7">kamadijoshua057@gmail.com | +254 715 187 321</font>', styles["Normal"]),
+            Paragraph(f'<font color="white" size="22"><b>INVOICE</b></font><br/>'
+                      f'<font color="#c9a84c" size="10"><b>{sale["invoice_number"]}</b></font>', styles["Normal"])
+        ]]
+        header_tbl = Table(header_data, colWidths=[11*cm, 6*cm])
+        header_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), deep_blue),
+            ("TEXTCOLOR", (0,0), (-1,-1), white),
+            ("ALIGN", (1,0), (1,0), "RIGHT"),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("PADDING", (0,0), (-1,-1), 18),
+            ("ROUNDEDCORNERS", [8,8,8,8]),
+        ]))
+        story.append(header_tbl)
+        story.append(Spacer(1, 0.5*cm))
+
+        # Bill To + Details
+        bill_to = Paragraph(
+            f'<font size="7" color="#b8bcc8"><b>BILL TO</b></font><br/>'
+            f'<font size="11" color="#0b1f3a"><b>{sale.get("customer_name","")}</b></font><br/>'
+            f'<font size="9" color="#3d4f66">{sale.get("customer_phone","")}</font><br/>'
+            f'<font size="9" color="#3d4f66">{sale.get("customer_email","")}</font><br/>'
+            f'<font size="9" color="#3d4f66">{sale.get("customer_address","Mombasa, Kenya")}</font>', styles["Normal"])
+
+        sale_dt = sale.get("sale_date","") or ""
+        details = Paragraph(
+            f'<font size="7" color="#b8bcc8"><b>SALE DETAILS</b></font><br/>'
+            f'<font size="8" color="#3d4f66"><b>Invoice Date:</b> {datetime.utcnow().strftime("%d %b %Y")}</font><br/>'
+            f'<font size="8" color="#3d4f66"><b>Sale Date:</b> {sale_dt}</font><br/>'
+            f'<font size="8" color="#3d4f66"><b>Salesperson:</b> {sale.get("salesperson_name","")}</font><br/>'
+            f'<font size="8" color="#3d4f66"><b>Method:</b> {(sale.get("payment_method","")).replace("_"," ").upper()}</font>', styles["Normal"])
+
+        info_tbl = Table([[bill_to, details]], colWidths=[9*cm, 8*cm])
+        info_tbl.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),("PADDING",(0,0),(-1,-1),6)]))
+        story.append(info_tbl)
+        story.append(Spacer(1, 0.4*cm))
+        story.append(HRFlowable(width="100%", thickness=0.5, color=HexColor("#e8eaef")))
+        story.append(Spacer(1, 0.3*cm))
+
+        # Vehicle Table
+        veh_data = [
+            [Paragraph("<font size='8' color='#c9a84c'><b>VEHICLE</b></font>", styles["Normal"]),
+             Paragraph("<font size='8' color='#c9a84c'><b>VIN</b></font>", styles["Normal"]),
+             Paragraph("<font size='8' color='#c9a84c'><b>YEAR</b></font>", styles["Normal"]),
+             Paragraph("<font size='8' color='#c9a84c'><b>AMOUNT (KES)</b></font>", styles["Normal"])],
+            [Paragraph(f'<font size="10" color="#0b1f3a"><b>{sale.get("make","")} {sale.get("model","")}</b></font><br/>'
+                       f'<font size="8" color="#7a8a9e">{sale.get("color","")}</font>', styles["Normal"]),
+             Paragraph(f'<font size="8" color="#3d4f66">{sale.get("vin","")}</font>', styles["Normal"]),
+             Paragraph(f'<font size="9" color="#3d4f66">{sale.get("year","")}</font>', styles["Normal"]),
+             Paragraph(f'<font size="11" color="#0b1f3a"><b>{float(sale.get("sale_price",0)):,.0f}</b></font>', styles["Normal"])]
+        ]
+        veh_tbl = Table(veh_data, colWidths=[7*cm, 4.5*cm, 2*cm, 3.5*cm])
+        veh_tbl.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0), deep_blue),
+            ("BACKGROUND",(0,1),(-1,1), light),
+            ("PADDING",(0,0),(-1,-1),10),
+            ("ALIGN",(3,0),(3,-1),"RIGHT"),
+        ]))
+        story.append(veh_tbl)
+        story.append(Spacer(1, 0.5*cm))
+
+        # Totals
+        total_amt = float(sale.get("total_amount",0))
+        amount_paid = float(sale.get("amount_paid",0))
+        balance = float(sale.get("balance",0))
+        discount = float(sale.get("discount",0))
+        tax = float(sale.get("tax_amount",0))
+
+        totals_data = [
+            ["Sale Price:", f"KES {float(sale.get('sale_price',0)):,.0f}"],
+            ["Discount:", f"- KES {discount:,.0f}"],
+            ["Tax (VAT):", f"KES {tax:,.0f}"],
+            ["TOTAL AMOUNT:", f"KES {total_amt:,.0f}"],
+            ["Amount Paid:", f"KES {amount_paid:,.0f}"],
+            ["Balance Due:", f"KES {balance:,.0f}"],
+        ]
+        totals_tbl = Table(totals_data, colWidths=[4*cm, 4*cm], hAlign="RIGHT")
+        totals_tbl.setStyle(TableStyle([
+            ("FONTSIZE",(0,0),(-1,-1),9),
+            ("FONTNAME",(0,3),(-1,3),"Helvetica-Bold"),
+            ("BACKGROUND",(0,3),(-1,3), deep_blue),
+            ("TEXTCOLOR",(0,3),(-1,3), gold),
+            ("FONTSIZE",(0,3),(-1,3),10),
+            ("PADDING",(0,0),(-1,-1),6),
+            ("ALIGN",(1,0),(1,-1),"RIGHT"),
+            ("LINEABOVE",(0,3),(-1,3),1,deep_blue),
+            ("TEXTCOLOR",(1,4),(1,4), green),
+            ("TEXTCOLOR",(1,5),(1,5), red if balance>0 else green),
+        ]))
+        story.append(totals_tbl)
+        story.append(Spacer(1, 1*cm))
+
+        # Footer
+        story.append(HRFlowable(width="100%", thickness=0.5, color=HexColor("#e8eaef")))
+        story.append(Spacer(1, 0.2*cm))
+        story.append(Paragraph(
+            '<font size="8" color="#b8bcc8">Thank you for choosing Joshua &amp; Family Car Dealership. '
+            'This is a computer-generated invoice.</font>', styles["Normal"]))
+
+        doc.build(story)
+        buf.seek(0)
+        return send_file(buf, mimetype="application/pdf",
+                         download_name=f"invoice-{sale['invoice_number']}.pdf", as_attachment=True)
+    except Exception as e:
+        return error(f"PDF generation failed: {str(e)}", 500)
+
+# ═══════════════════════════════════════════════════════
+#  PAYMENT ROUTES
+# ═══════════════════════════════════════════════════════
+@app.route("/api/payments", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","accountant")
+def get_payments():
+    p = request.args
+    items = list(DB["payments"])
+    if p.get("sale_id"): items = [x for x in items if x["sale_id"]==p["sale_id"]]
+    if p.get("status"):  items = [x for x in items if x["status"]==p["status"]]
+    for pmt in items:
+        s = find_one("sales", id=pmt["sale_id"]) or {}
+        c = find_one("customers", id=s.get("customer_id","")) or {}
+        pmt["invoice_number"] = s.get("invoice_number","")
+        pmt["customer_name"] = f"{c.get('first_name','')} {c.get('last_name','')}".strip()
+    result = paginate(items, p.get("page",1), p.get("limit",20))
+    return jsonify({"success": True, **result})
+
+@app.route("/api/payments", methods=["POST"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","accountant")
+def record_payment():
+    d = request.get_json() or {}
+    errs = []
+    if not d.get("sale_id"): errs.append({"field":"sale_id","message":"Required"})
+    if not d.get("amount"):  errs.append({"field":"amount","message":"Required"})
+    if not d.get("method"):  errs.append({"field":"method","message":"Required"})
+    if errs: return error("Validation failed", 422, errs)
+
+    s = find_one("sales", id=d["sale_id"])
+    if not s: return error("Sale not found", 404)
+
+    amt = float(d["amount"])
+    pmt = {"id": gen_id("p"), "sale_id": d["sale_id"], "amount": amt,
+           "method": d["method"], "reference": d.get("reference",""),
+           "mpesa_receipt": None, "status": "completed",
+           "paid_at": now_iso(), "notes": d.get("notes","")}
+    DB["payments"].append(pmt)
+
+    # Update sale
+    new_paid = float(s["amount_paid"]) + amt
+    new_balance = max(0, float(s["total_amount"]) - new_paid)
+    s["amount_paid"] = new_paid
+    s["balance"] = new_balance
+    s["payment_status"] = "paid" if new_balance <= 0 else "partial"
+    s["updated_at"] = now_iso()
+
+    return success(pmt, "Payment recorded successfully", 201)
+
+@app.route("/api/payments/mpesa/initiate", methods=["POST"])
+@authenticate
+def mpesa_initiate():
+    d = request.get_json() or {}
+    errs = []
+    if not d.get("phone"):   errs.append({"field":"phone","message":"Required"})
+    if not d.get("amount"):  errs.append({"field":"amount","message":"Required"})
+    if not d.get("sale_id"): errs.append({"field":"sale_id","message":"Required"})
+    if errs: return error("Validation failed", 422, errs)
+
+    # Normalize phone
+    phone = re.sub(r'\D','', d["phone"])
+    if phone.startswith("0"): phone = "254" + phone[1:]
+    checkout_id = f"ws_CO_{gen_id()}"
+
+    # Store pending payment record
+    DB["payments"].append({
+        "id": gen_id("p"), "sale_id": d["sale_id"], "amount": float(d["amount"]),
+        "method": "mpesa", "reference": checkout_id,
+        "mpesa_receipt": None, "status": "pending",
+        "paid_at": None, "notes": f"M-Pesa STK Push to {phone}"
+    })
+
+    return success({
+        "checkout_request_id": checkout_id,
+        "phone": phone,
+        "amount": float(d["amount"]),
+        "message": "M-Pesa payment request sent. Check your phone."
+    }, "M-Pesa STK Push initiated")
+
+@app.route("/api/payments/mpesa/callback", methods=["POST"])
+def mpesa_callback():
+    try:
+        body = request.get_json() or {}
+        cb = body.get("Body", {}).get("stkCallback", {})
+        checkout_id = cb.get("CheckoutRequestID","")
+        result_code = cb.get("ResultCode", 1)
+
+        pmt = next((p for p in DB["payments"] if p.get("reference")==checkout_id), None)
+        if pmt:
+            if result_code == 0:
+                items = cb.get("CallbackMetadata",{}).get("Item",[])
+                receipt = next((i["Value"] for i in items if i["Name"]=="MpesaReceiptNumber"), None)
+                amt = next((i["Value"] for i in items if i["Name"]=="Amount"), pmt["amount"])
+                pmt["status"] = "completed"
+                pmt["mpesa_receipt"] = receipt
+                pmt["paid_at"] = now_iso()
+                # Update sale
+                s = find_one("sales", id=pmt["sale_id"])
+                if s:
+                    new_paid = float(s["amount_paid"]) + float(amt)
+                    s["amount_paid"] = new_paid
+                    s["balance"] = max(0, float(s["total_amount"]) - new_paid)
+                    s["payment_status"] = "paid" if s["balance"]<=0 else "partial"
+            else:
+                pmt["status"] = "failed"
+    except: pass
+    return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"})
+
+# ═══════════════════════════════════════════════════════
+#  LEADS ROUTES
+# ═══════════════════════════════════════════════════════
+@app.route("/api/leads", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","salesperson")
+def get_leads():
+    p = request.args
+    items = list(DB["leads"])
+    if p.get("status"):   items = [l for l in items if l["status"]==p["status"]]
+    if p.get("priority"): items = [l for l in items if l["priority"]==p["priority"]]
+    if p.get("search"):
+        q = p["search"].lower()
+        items = [l for l in items if q in (l.get("name","")).lower() or q in (l.get("phone","")).lower()]
+
+    enriched = []
+    for l in items:
+        veh = find_one("vehicles", id=l.get("vehicle_id","")) or {}
+        sp  = find_one("users", id=l.get("assigned_to","")) or {}
+        enriched.append({**l,
+            "make": veh.get("make",""), "model": veh.get("model",""),
+            "assigned_to_name": f"{sp.get('first_name','')} {sp.get('last_name','')}".strip()})
+
+    result = paginate(enriched, p.get("page",1), p.get("limit",20))
+    return jsonify({"success": True, **result})
+
+@app.route("/api/leads", methods=["POST"])
+def create_lead():
+    d = request.get_json() or {}
+    l = {"id": gen_id("l"), "customer_id": d.get("customer_id"), "vehicle_id": d.get("vehicle_id"),
+         "name": d.get("name",""), "email": d.get("email",""), "phone": d.get("phone",""),
+         "message": d.get("message",""), "source": d.get("source","website"),
+         "priority": d.get("priority","cold"), "status": "new",
+         "assigned_to": d.get("assigned_to"), "follow_up_date": d.get("follow_up_date"),
+         "notes": "", "created_at": now_iso()}
+    DB["leads"].append(l)
+    return success(l, "Lead created", 201)
+
+@app.route("/api/leads/<lid>", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","salesperson")
+def get_lead(lid):
+    l = find_one("leads", id=lid)
+    if not l: return error("Lead not found", 404)
+    veh = find_one("vehicles", id=l.get("vehicle_id","")) or {}
+    return success({**l, "make": veh.get("make",""), "model": veh.get("model","")})
+
+@app.route("/api/leads/<lid>", methods=["PATCH"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","salesperson")
+def update_lead(lid):
+    l = find_one("leads", id=lid)
+    if not l: return error("Lead not found", 404)
+    d = request.get_json() or {}
+    for k in ["status","priority","assigned_to","notes","follow_up_date"]:
+        if k in d: l[k] = d[k]
+    l["updated_at"] = now_iso()
+    return success(l)
+
+@app.route("/api/leads/<lid>", methods=["DELETE"])
+@authenticate
+@authorize("super_admin","admin","sales_manager")
+def delete_lead(lid):
+    l = find_one("leads", id=lid)
+    if not l: return error("Lead not found", 404)
+    DB["leads"].remove(l)
+    return success(message="Lead deleted")
+
+# ═══════════════════════════════════════════════════════
+#  TEST DRIVES ROUTES
+# ═══════════════════════════════════════════════════════
+@app.route("/api/test-drives", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","salesperson")
+def get_test_drives():
+    p = request.args
+    items = list(DB["test_drives"])
+    if p.get("status"): items = [td for td in items if td["status"]==p["status"]]
+    enriched = []
+    for td in items:
+        c = find_one("customers", id=td.get("customer_id","")) or {}
+        v = find_one("vehicles",  id=td.get("vehicle_id","")) or {}
+        u = find_one("users",     id=td.get("salesperson_id","")) or {}
+        enriched.append({**td,
+            "customer_name": f"{c.get('first_name','')} {c.get('last_name','')}".strip(),
+            "customer_phone": c.get("phone",""),
+            "make": v.get("make",""), "model": v.get("model",""), "year": v.get("year",""),
+            "salesperson_name": f"{u.get('first_name','')} {u.get('last_name','')}".strip()})
+    return success(enriched)
+
+@app.route("/api/test-drives", methods=["POST"])
+def create_test_drive():
+    d = request.get_json() or {}
+    errs = []
+    if not d.get("vehicle_id"):      errs.append({"field":"vehicle_id","message":"Required"})
+    if not d.get("scheduled_date"):  errs.append({"field":"scheduled_date","message":"Required"})
+    if not d.get("scheduled_time"):  errs.append({"field":"scheduled_time","message":"Required"})
+    if errs: return error("Validation failed", 422, errs)
+
+    conflict = next((td for td in DB["test_drives"]
+        if td["vehicle_id"]==d["vehicle_id"]
+        and td["scheduled_date"]==d["scheduled_date"]
+        and td["scheduled_time"]==d["scheduled_time"]
+        and td["status"] not in ("cancelled","no_show")), None)
+    if conflict:
+        return error("This vehicle already has a test drive booked at that time", 409)
+
+    td = {"id": gen_id("td"), "customer_id": d.get("customer_id"),
+          "vehicle_id": d["vehicle_id"], "salesperson_id": d.get("salesperson_id"),
+          "scheduled_date": d["scheduled_date"], "scheduled_time": d["scheduled_time"],
+          "status": "pending", "notes": d.get("notes",""),
+          "feedback": None, "rating": None, "created_at": now_iso()}
+    DB["test_drives"].append(td)
+    return success(td, "Test drive booked", 201)
+
+@app.route("/api/test-drives/<tdid>", methods=["PATCH"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","salesperson")
+def update_test_drive(tdid):
+    td = find_one("test_drives", id=tdid)
+    if not td: return error("Test drive not found", 404)
+    d = request.get_json() or {}
+    for k in ["status","notes","feedback","rating"]:
+        if k in d: td[k] = d[k]
+    td["updated_at"] = now_iso()
+    return success(td)
+
+# ═══════════════════════════════════════════════════════
+#  SERVICE RECORDS ROUTES
+# ═══════════════════════════════════════════════════════
+@app.route("/api/services", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","inventory_manager")
+def get_services():
+    items = list(DB["service_records"])
+    enriched = []
+    for sr in items:
+        v = find_one("vehicles",  id=sr.get("vehicle_id","")) or {}
+        c = find_one("customers", id=sr.get("customer_id","")) or {}
+        u = find_one("users",     id=sr.get("mechanic_id","")) or {}
+        enriched.append({**sr,
+            "make": v.get("make",""), "model": v.get("model",""), "vin": v.get("vin",""),
+            "customer_name": f"{c.get('first_name','')} {c.get('last_name','')}".strip(),
+            "mechanic_name": f"{u.get('first_name','')} {u.get('last_name','')}".strip()})
+    return success(enriched)
+
+@app.route("/api/services", methods=["POST"])
+@authenticate
+@authorize("super_admin","admin","inventory_manager")
+def create_service():
+    d = request.get_json() or {}
+    sr = {"id": gen_id("sr"), "vehicle_id": d.get("vehicle_id"),
+          "customer_id": d.get("customer_id"), "mechanic_id": d.get("mechanic_id"),
+          "service_type": d.get("service_type",""), "description": d.get("description",""),
+          "cost": float(d.get("cost",0)), "status": "scheduled",
+          "scheduled_date": d.get("scheduled_date"), "completed_date": None,
+          "mileage_at_service": d.get("mileage_at_service"),
+          "notes": d.get("notes",""), "created_at": now_iso()}
+    DB["service_records"].append(sr)
+    return success(sr, "Service record created", 201)
+
+@app.route("/api/services/<srid>", methods=["PATCH"])
+@authenticate
+@authorize("super_admin","admin","inventory_manager")
+def update_service(srid):
+    sr = find_one("service_records", id=srid)
+    if not sr: return error("Service record not found", 404)
+    d = request.get_json() or {}
+    for k in ["status","cost","completed_date","notes"]:
+        if k in d: sr[k] = d[k]
+    if d.get("status") == "completed":
+        veh = find_one("vehicles", id=sr.get("vehicle_id",""))
+        if veh and veh["status"] == "service": veh["status"] = "available"
+    sr["updated_at"] = now_iso()
+    return success(sr)
+
+# ═══════════════════════════════════════════════════════
+#  FINANCING ROUTES
+# ═══════════════════════════════════════════════════════
+@app.route("/api/financing", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","accountant","sales_manager")
+def get_financing():
+    items = list(DB["financing_applications"])
+    if request.args.get("status"):
+        items = [fa for fa in items if fa["status"]==request.args["status"]]
+    enriched = []
+    for fa in items:
+        v = find_one("vehicles", id=fa.get("vehicle_id","")) or {}
+        enriched.append({**fa, "make": v.get("make",""), "model": v.get("model","")})
+    return success(enriched)
+
+@app.route("/api/financing", methods=["POST"])
+def create_financing():
+    d = request.get_json() or {}
+    errs = []
+    for f in ["full_name","id_number","phone"]:
+        if not d.get(f): errs.append({"field":f,"message":"Required"})
+    if errs: return error("Validation failed", 422, errs)
+    fa = {"id": gen_id("fa"), "customer_id": d.get("customer_id"), "vehicle_id": d.get("vehicle_id"),
+          "full_name": d["full_name"], "id_number": d["id_number"], "phone": d["phone"],
+          "email": d.get("email",""), "employment_status": d.get("employment_status",""),
+          "monthly_income": float(d.get("monthly_income",0)),
+          "financing_type": d.get("financing_type",""), "loan_amount": float(d.get("loan_amount",0)),
+          "down_payment": float(d.get("down_payment",0)), "term_months": int(d.get("term_months",36)),
+          "status": "pending", "notes": "", "created_at": now_iso()}
+    DB["financing_applications"].append(fa)
+    return success(fa, "Financing application submitted", 201)
+
+@app.route("/api/financing/<faid>/status", methods=["PATCH"])
+@authenticate
+@authorize("super_admin","admin","accountant")
+def update_financing_status(faid):
+    fa = find_one("financing_applications", id=faid)
+    if not fa: return error("Application not found", 404)
+    d = request.get_json() or {}
+    if d.get("status"): fa["status"] = d["status"]
+    if d.get("notes"):  fa["notes"] = d["notes"]
+    fa["updated_at"] = now_iso()
+    return success(fa)
+
+# ═══════════════════════════════════════════════════════
+#  DASHBOARD STATS
+# ═══════════════════════════════════════════════════════
+@app.route("/api/dashboard/stats", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","accountant")
+def dashboard_stats():
+    now = datetime.utcnow()
+    this_month = now.strftime("%Y-%m")
+    last_month  = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+
+    sales = DB["sales"]
+    month_sales = [s for s in sales if s.get("sale_date","")[:7]==this_month]
+    last_month_sales = [s for s in sales if s.get("sale_date","")[:7]==last_month]
+    vehicles = DB["vehicles"]
+
+    # Monthly revenue last 6 months
+    monthly = {}
+    for s in sales:
+        m = s.get("sale_date","")[:7]
+        if m: monthly[m] = monthly.get(m, {"count":0,"revenue":0})
+        if m: monthly[m]["count"] += 1; monthly[m]["revenue"] += s["total_amount"]
+
+    # Inventory by status
+    inv_status = {}
+    for v in vehicles:
+        inv_status[v["status"]] = inv_status.get(v["status"],0) + 1
+
+    recent_sales = [enrich_sale(s) for s in sorted(sales, key=lambda x: x.get("created_at",""), reverse=True)[:8]]
+    recent_leads = []
+    for l in sorted(DB["leads"], key=lambda x: x.get("created_at",""), reverse=True)[:6]:
+        v = find_one("vehicles", id=l.get("vehicle_id","")) or {}
+        recent_leads.append({**l, "make": v.get("make",""), "model": v.get("model","")})
+
+    top_vehicles = sorted(vehicles, key=lambda v: v.get("views_count",0), reverse=True)[:5]
+    top_vehicles_enriched = [enrich_vehicle(v) for v in top_vehicles]
+
+    return success({
+        "overview": {
+            "available_vehicles": inv_status.get("available",0),
+            "total_vehicles": len(vehicles),
+            "revenue_this_month": sum(s["total_amount"] for s in month_sales),
+            "revenue_last_month": sum(s["total_amount"] for s in last_month_sales),
+            "sales_this_month": len(month_sales),
+            "pending_test_drives": len([td for td in DB["test_drives"] if td["status"]=="pending"]),
+            "new_leads": len([l for l in DB["leads"] if l["status"]=="new"]),
+            "total_customers": len(DB["customers"]),
+            "pending_financing": len([fa for fa in DB["financing_applications"] if fa["status"]=="pending"]),
+        },
+        "monthly_sales": [{"month": k, "sales_count": v["count"], "revenue": v["revenue"]}
+                          for k,v in sorted(monthly.items())[-6:]],
+        "inventory_summary": [{"status": k, "count": v} for k,v in inv_status.items()],
+        "top_viewed_vehicles": top_vehicles_enriched,
+        "recent_sales": recent_sales,
+        "recent_leads": recent_leads,
+    })
+
+# ═══════════════════════════════════════════════════════
+#  USERS MANAGEMENT
+# ═══════════════════════════════════════════════════════
+@app.route("/api/users", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin")
+def get_users():
+    users = []
+    for u in DB["users"]:
+        role = get_role(u.get("role_id","")) or {}
+        safe = {k: v for k, v in u.items() if k != "password_hash"}
+        safe["role_name"] = role.get("name","")
+        users.append(safe)
+    return success(users)
+
+@app.route("/api/users", methods=["POST"])
+@authenticate
+@authorize("super_admin","admin")
+def create_user():
+    d = request.get_json() or {}
+    errs = []
+    if not d.get("email") or "@" not in d.get("email",""): errs.append({"field":"email","message":"Valid email required"})
+    if not d.get("first_name"): errs.append({"field":"first_name","message":"Required"})
+    if not d.get("role_name"):  errs.append({"field":"role_name","message":"Required"})
+    if errs: return error("Validation failed", 422, errs)
+
+    if find_one("users", email=d["email"].lower()):
+        return error("Email already in use", 409)
+    role = find_one("roles", name=d["role_name"])
+    if not role: return error("Invalid role", 400)
+
+    u = {"id": gen_id("u"), "role_id": role["id"],
+         "first_name": d["first_name"], "last_name": d.get("last_name",""),
+         "email": d["email"].lower(), "phone": d.get("phone",""),
+         "password_hash": generate_password_hash(d.get("password","Admin@1234")),
+         "is_active": True, "email_verified": True, "last_login": None, "created_at": now_iso()}
+    DB["users"].append(u)
+    safe = {k: v for k, v in u.items() if k != "password_hash"}
+    return success(safe, "User created", 201)
+
+@app.route("/api/users/<uid>", methods=["PATCH"])
+@authenticate
+@authorize("super_admin","admin")
+def update_user(uid):
+    u = find_one("users", id=uid)
+    if not u: return error("User not found", 404)
+    d = request.get_json() or {}
+    for k in ["first_name","last_name","phone","is_active"]:
+        if k in d: u[k] = d[k]
+    if d.get("role_name"):
+        role = find_one("roles", name=d["role_name"])
+        if role: u["role_id"] = role["id"]
+    u["updated_at"] = now_iso()
+    safe = {k: v for k, v in u.items() if k != "password_hash"}
+    return success(safe)
+
+# ═══════════════════════════════════════════════════════
+#  NOTIFICATIONS
+# ═══════════════════════════════════════════════════════
+@app.route("/api/notifications", methods=["GET"])
+@authenticate
+def get_notifications():
+    notifs = find("notifications", user_id=g.user["id"])
+    notifs.sort(key=lambda n: n.get("created_at",""), reverse=True)
+    unread = len([n for n in notifs if not n.get("is_read")])
+    return success(notifs[:50], unread_count=unread)
+
+@app.route("/api/notifications/read", methods=["PATCH"])
+@authenticate
+def mark_read():
+    d = request.get_json() or {}
+    ids = d.get("ids")
+    for n in DB["notifications"]:
+        if n["user_id"] == g.user["id"]:
+            if not ids or n["id"] in ids:
+                n["is_read"] = True
+    return success(message="Notifications marked as read")
+
+# ═══════════════════════════════════════════════════════
+#  WISHLIST
+# ═══════════════════════════════════════════════════════
+@app.route("/api/wishlist", methods=["GET"])
+@authenticate
+def get_wishlist():
+    items = find("wishlists", user_id=g.user["id"])
+    enriched = []
+    for w in items:
+        v = find_one("vehicles", id=w.get("vehicle_id",""))
+        if v: enriched.append({**w, **enrich_vehicle(v)})
+    return success(enriched)
+
+@app.route("/api/wishlist/toggle", methods=["POST"])
+@authenticate
+def toggle_wishlist():
+    d = request.get_json() or {}
+    vid = d.get("vehicle_id")
+    if not vid: return error("vehicle_id required")
+    existing = next((w for w in DB["wishlists"] if w["user_id"]==g.user["id"] and w["vehicle_id"]==vid), None)
+    if existing:
+        DB["wishlists"].remove(existing)
+        return success({"in_wishlist": False}, "Removed from wishlist")
+    DB["wishlists"].append({"id": gen_id("w"), "user_id": g.user["id"],
+                             "vehicle_id": vid, "created_at": now_iso()})
+    return success({"in_wishlist": True}, "Added to wishlist")
+
+# ═══════════════════════════════════════════════════════
+#  REPORTS ROUTES
+# ═══════════════════════════════════════════════════════
+@app.route("/api/reports/sales", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","sales_manager","accountant")
+def sales_report():
+    p = request.args
+    date_from = p.get("date_from", str(datetime.utcnow().date().replace(month=1, day=1)))
+    date_to   = p.get("date_to",   str(datetime.utcnow().date()))
+    fmt = p.get("format","json")
+
+    sales = [s for s in DB["sales"] if date_from <= s.get("sale_date","9999") <= date_to]
+    enriched = [enrich_sale(s) for s in sorted(sales, key=lambda x: x.get("sale_date",""))]
+
+    if fmt == "excel":
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+            from openpyxl.utils import get_column_letter
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Sales Report"
+
+            deep_fill = PatternFill("solid", fgColor="0B1F3A")
+            gold_fill = PatternFill("solid", fgColor="C9A84C")
+            light_fill = PatternFill("solid", fgColor="F5F6F8")
+            white_fill = PatternFill("solid", fgColor="FFFFFF")
+
+            # Title row
+            ws.merge_cells("A1:J1")
+            title_cell = ws["A1"]
+            title_cell.value = "JOSHUA & FAMILY CAR DEALERSHIP — SALES REPORT"
+            title_cell.fill = deep_fill
+            title_cell.font = Font(bold=True, color="C9A84C", size=14)
+            title_cell.alignment = Alignment(horizontal="center", vertical="center")
+            ws.row_dimensions[1].height = 32
+
+            ws.merge_cells("A2:J2")
+            sub = ws["A2"]
+            sub.value = f"Period: {date_from} to {date_to} | Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC"
+            sub.fill = PatternFill("solid", fgColor="FEF9EE")
+            sub.font = Font(color="0B1F3A", size=9)
+            sub.alignment = Alignment(horizontal="center")
+            ws.row_dimensions[2].height = 18
+
+            headers = ["#","Invoice No.","Sale Date","Customer","Phone","Vehicle","Amount (KES)","Payment Method","Status","Salesperson"]
+            col_widths = [5, 18, 12, 22, 16, 28, 16, 18, 12, 20]
+
+            for ci, (h, w) in enumerate(zip(headers, col_widths), 1):
+                cell = ws.cell(row=3, column=ci, value=h)
+                cell.fill = deep_fill
+                cell.font = Font(bold=True, color="C9A84C", size=9)
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                ws.column_dimensions[get_column_letter(ci)].width = w
+            ws.row_dimensions[3].height = 26
+
+            total_rev = 0
+            for ri, s in enumerate(enriched, 1):
+                row_fill = light_fill if ri % 2 == 0 else white_fill
+                row = [ri, s.get("invoice_number",""), s.get("sale_date",""),
+                       s.get("customer_name",""), s.get("customer_phone",""),
+                       f"{s.get('make','')} {s.get('model','')} {s.get('year','')}",
+                       float(s.get("total_amount",0)),
+                       (s.get("payment_method","")).replace("_"," ").upper(),
+                       (s.get("payment_status","")).upper(),
+                       s.get("salesperson_name","")]
+
+                for ci, val in enumerate(row, 1):
+                    cell = ws.cell(row=3+ri, column=ci, value=val)
+                    cell.fill = row_fill
+                    cell.font = Font(size=9, color="3D4F66")
+                    if ci == 7:
+                        cell.number_format = '#,##0.00'
+                        cell.font = Font(bold=True, color="0B1F3A", size=9)
+                    if ci == 9:
+                        cell.font = Font(bold=True, color="1A6B3C" if val=="PAID" else "C0392B", size=9)
+                ws.row_dimensions[3+ri].height = 20
+                total_rev += float(s.get("total_amount",0))
+
+            # Totals row
+            tr = 4 + len(enriched)
+            ws.cell(row=tr, column=4, value=f"TOTAL ({len(enriched)} sales)")
+            ws.cell(row=tr, column=7, value=total_rev).number_format = '#,##0.00'
+            for ci in range(1, len(headers)+1):
+                cell = ws.cell(row=tr, column=ci)
+                cell.fill = deep_fill
+                cell.font = Font(bold=True, color="C9A84C", size=10)
+            ws.row_dimensions[tr].height = 26
+
+            buf = io.BytesIO()
+            wb.save(buf)
+            buf.seek(0)
+            return send_file(buf,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                download_name=f"sales-report-{date_from}-to-{date_to}.xlsx",
+                as_attachment=True)
+        except Exception as e:
+            return error(f"Excel generation failed: {str(e)}", 500)
+
+    return success(enriched, summary={
+        "total_records": len(enriched),
+        "total_revenue": sum(float(s.get("total_amount",0)) for s in enriched),
+        "date_range": {"from": date_from, "to": date_to}
+    })
+
+@app.route("/api/reports/inventory", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin","inventory_manager")
+def inventory_report():
+    fmt = request.args.get("format","json")
+    vehicles = DB["vehicles"]
+
+    if fmt == "excel":
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import PatternFill, Font, Alignment
+            from openpyxl.utils import get_column_letter
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Inventory"
+
+            ws.merge_cells("A1:L1")
+            tc = ws["A1"]
+            tc.value = "JOSHUA & FAMILY CAR DEALERSHIP — VEHICLE INVENTORY"
+            tc.fill = PatternFill("solid", fgColor="0B1F3A")
+            tc.font = Font(bold=True, color="C9A84C", size=14)
+            tc.alignment = Alignment(horizontal="center")
+            ws.row_dimensions[1].height = 30
+
+            headers = ["#","VIN","Make","Model","Year","Color","Mileage (km)","Price (KES)","Fuel","Transmission","Condition","Status"]
+            widths   = [5,  20,   12,    16,     8,     14,     14,             16,            10,    14,             12,          12]
+            for ci,(h,w) in enumerate(zip(headers,widths),1):
+                cell = ws.cell(row=2,column=ci,value=h)
+                cell.fill = PatternFill("solid",fgColor="0B1F3A")
+                cell.font = Font(bold=True,color="C9A84C",size=9)
+                cell.alignment = Alignment(horizontal="center")
+                ws.column_dimensions[get_column_letter(ci)].width = w
+            ws.row_dimensions[2].height = 24
+
+            for ri,v in enumerate(sorted(vehicles,key=lambda x:x["make"]),1):
+                rf = PatternFill("solid",fgColor="F5F6F8") if ri%2==0 else PatternFill("solid",fgColor="FFFFFF")
+                row = [ri,v.get("vin",""),v.get("make",""),v.get("model",""),v.get("year",""),
+                       v.get("color",""),v.get("mileage",""),float(v.get("price",0)),
+                       v.get("fuel_type",""),v.get("transmission",""),v.get("condition",""),v.get("status","")]
+                for ci,val in enumerate(row,1):
+                    cell = ws.cell(row=2+ri,column=ci,value=val)
+                    cell.fill=rf; cell.font=Font(size=9,color="3D4F66")
+                    if ci==8: cell.number_format='#,##0.00'
+                ws.row_dimensions[2+ri].height=20
+
+            buf=io.BytesIO(); wb.save(buf); buf.seek(0)
+            return send_file(buf,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                download_name="vehicle-inventory.xlsx",as_attachment=True)
+        except Exception as e:
+            return error(f"Excel generation failed: {str(e)}", 500)
+
+    return success(vehicles)
+
+@app.route("/api/reports/activity-logs", methods=["GET"])
+@authenticate
+@authorize("super_admin","admin")
+def activity_logs():
+    logs = sorted(DB["activity_logs"], key=lambda l: l.get("created_at",""), reverse=True)[:200]
+    enriched = []
+    for l in logs:
+        u = find_one("users", id=l.get("user_id","")) or {}
+        enriched.append({**l, "user_name": f"{u.get('first_name','')} {u.get('last_name','')}".strip(),
+                         "email": u.get("email","")})
+    return success(enriched)
+
+
+
+# ═══════════════════════════════════════════════════════════
+#  FRONTEND — Served at "/" by Flask
+# ═══════════════════════════════════════════════════════════
+_FRONTEND_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Joshua & Family Car Dealership</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--deep-blue:#0b1f3a;--mid-blue:#163560;--accent-blue:#1a4a8a;--silver:#b8bcc8;--silver-light:#e8eaef;--gold:#c9a84c;--gold-light:#f0d080;--white:#ffffff;--off-white:#f5f6f8;--text-dark:#0d1b2e;--text-mid:#3d4f66;--text-light:#7a8a9e;--danger:#c0392b;--success:#1a6b3c;--radius:4px;--radius-lg:10px;--shadow:0 2px 16px rgba(11,31,58,.10);--shadow-card:0 4px 32px rgba(11,31,58,.13);--transition:all 0.22s cubic-bezier(.4,0,.2,1)}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}body{font-family:'DM Sans',sans-serif;color:var(--text-dark);background:var(--white);overflow-x:hidden}
+h1,h2,h3,h4{font-family:'Playfair Display',serif}a{text-decoration:none;color:inherit}img{max-width:100%}button{cursor:pointer;font-family:'DM Sans',sans-serif}ul{list-style:none}
+#app-loading{position:fixed;inset:0;background:var(--deep-blue);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;transition:opacity .5s ease}
+#app-loading.fade-out{opacity:0;pointer-events:none}
+.loading-logo{font-family:'Playfair Display',serif;font-size:2.2rem;font-weight:700;color:var(--gold);margin-bottom:.5rem}
+.loading-sub{font-size:.8rem;color:rgba(255,255,255,.4);letter-spacing:.2em;text-transform:uppercase;margin-bottom:2rem}
+.loading-bar{width:200px;height:3px;background:rgba(255,255,255,.1);border-radius:3px;overflow:hidden}
+.loading-bar-fill{height:100%;background:linear-gradient(90deg,var(--gold),var(--gold-light));border-radius:3px;animation:loading 1.8s ease-in-out}
+@keyframes loading{0%{width:0}100%{width:100%}}
+#auth-screen{display:none;position:fixed;inset:0;background:var(--deep-blue);z-index:8000;align-items:center;justify-content:center}
+#auth-screen.active{display:flex}
+.auth-card{background:rgba(255,255,255,.05);border:1px solid rgba(201,168,76,.2);border-radius:var(--radius-lg);padding:2.5rem;width:100%;max-width:420px;backdrop-filter:blur(12px)}
+.auth-logo-mark{width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--gold),var(--gold-light));display:flex;align-items:center;justify-content:center;font-family:'Playfair Display',serif;font-weight:700;font-size:22px;color:var(--deep-blue);margin:0 auto 1rem}
+.auth-title{font-size:1.4rem;color:var(--white);margin-bottom:.25rem;text-align:center}
+.auth-sub{font-size:.8rem;color:rgba(255,255,255,.4);text-align:center;letter-spacing:.08em;text-transform:uppercase;margin-bottom:1.5rem}
+.auth-tabs{display:flex;margin-bottom:1.5rem;border:1px solid rgba(255,255,255,.1);border-radius:var(--radius);overflow:hidden}
+.auth-tab{flex:1;padding:.55rem;text-align:center;font-size:.82rem;font-weight:600;color:rgba(255,255,255,.4);cursor:pointer;border:none;background:transparent;transition:var(--transition)}
+.auth-tab.active{background:rgba(201,168,76,.15);color:var(--gold)}
+.auth-label{display:block;font-size:.72rem;font-weight:600;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.4rem}
+.auth-input{width:100%;padding:.7rem 1rem;background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.1);border-radius:var(--radius);color:var(--white);font-size:.9rem;font-family:'DM Sans',sans-serif;transition:var(--transition);margin-bottom:1rem}
+.auth-input:focus{outline:none;border-color:var(--gold);background:rgba(255,255,255,.1)}
+.auth-input::placeholder{color:rgba(255,255,255,.3)}
+.auth-btn{width:100%;padding:.8rem;background:linear-gradient(135deg,var(--gold),#b8922a);color:var(--deep-blue);font-weight:700;font-size:.95rem;border:none;border-radius:var(--radius);cursor:pointer;transition:var(--transition);font-family:'DM Sans',sans-serif}
+.auth-btn:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(201,168,76,.3)}
+.auth-btn:disabled{opacity:.6;cursor:not-allowed;transform:none}
+.auth-error{background:rgba(192,57,43,.15);border:1px solid rgba(192,57,43,.3);color:#ff6b6b;padding:.7rem 1rem;border-radius:var(--radius);font-size:.82rem;margin-bottom:1rem;display:none}
+.auth-error.show{display:block}
+.auth-form{display:none}.auth-form.active{display:block}
+.auth-two-col{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+.auth-guest{text-align:center;margin-top:1.25rem}
+.auth-guest a{font-size:.82rem;color:rgba(255,255,255,.4);cursor:pointer;transition:var(--transition)}
+.auth-guest a:hover{color:var(--gold)}
+#region-header{position:fixed;top:0;left:0;right:0;z-index:1000;background:rgba(11,31,58,.97);backdrop-filter:blur(8px);border-bottom:1px solid rgba(201,168,76,.18)}
+.header-inner{max-width:1360px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:0 2rem;height:72px}
+.site-logo{display:flex;align-items:center;gap:12px;cursor:pointer}
+.logo-mark{width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,var(--gold),var(--gold-light));display:flex;align-items:center;justify-content:center;font-family:'Playfair Display',serif;font-weight:700;font-size:18px;color:var(--deep-blue)}
+.logo-text{display:flex;flex-direction:column;line-height:1.1}
+.logo-name{font-family:'Playfair Display',serif;font-size:1rem;font-weight:700;color:var(--white)}
+.logo-sub{font-size:.65rem;color:var(--gold);letter-spacing:.15em;text-transform:uppercase}
+#block-primary-menu nav ul{display:flex;align-items:center;gap:.25rem}
+#block-primary-menu nav ul li a{display:block;padding:.5rem 1rem;font-size:.85rem;font-weight:500;color:rgba(255,255,255,.82);text-transform:uppercase;border-radius:var(--radius);transition:var(--transition);position:relative;cursor:pointer}
+#block-primary-menu nav ul li a:hover,#block-primary-menu nav ul li a.active{color:var(--gold)}
+#block-primary-menu nav ul li a.active::after{content:'';position:absolute;bottom:-2px;left:1rem;right:1rem;height:2px;background:var(--gold);border-radius:2px}
+.header-actions{display:flex;align-items:center;gap:.75rem}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:.55rem 1.25rem;border-radius:var(--radius);font-size:.85rem;font-weight:600;transition:var(--transition);border:none;cursor:pointer}
+.btn-outline{border:1px solid rgba(201,168,76,.5);color:var(--gold);background:transparent}
+.btn-outline:hover{background:rgba(201,168,76,.1)}
+.btn-gold{background:linear-gradient(135deg,var(--gold),#b8922a);color:var(--deep-blue);font-weight:700}
+.btn-gold:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(201,168,76,.3)}
+.btn-blue{background:var(--accent-blue);color:var(--white)}.btn-blue:hover{background:var(--mid-blue)}
+.btn-danger{background:var(--danger);color:white}
+.btn-sm{padding:.35rem .9rem;font-size:.78rem}.btn-lg{padding:.8rem 2rem;font-size:1rem}
+.user-chip{display:flex;align-items:center;gap:8px;padding:.35rem .9rem .35rem .5rem;background:rgba(201,168,76,.1);border:1px solid rgba(201,168,76,.2);border-radius:100px;cursor:pointer;transition:var(--transition)}
+.user-chip:hover{background:rgba(201,168,76,.18)}
+.user-avatar{width:28px;height:28px;border-radius:50%;background:var(--gold);display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700;color:var(--deep-blue)}
+.user-name{font-size:.78rem;color:var(--gold);font-weight:600;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.notif-btn{position:relative;width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;font-size:1rem;cursor:pointer;transition:var(--transition)}
+.notif-btn:hover{background:rgba(201,168,76,.1)}
+.notif-badge{position:absolute;top:-2px;right:-2px;width:16px;height:16px;background:var(--danger);border-radius:50%;font-size:.6rem;font-weight:700;color:white;display:none;align-items:center;justify-content:center}
+.notif-badge.show{display:flex}
+#region-hero{min-height:100vh;background:var(--deep-blue);position:relative;overflow:hidden;display:flex;align-items:center;padding-top:72px}
+.hero-bg{position:absolute;inset:0;background:radial-gradient(ellipse at 60% 40%,rgba(26,74,138,.4) 0%,transparent 65%),radial-gradient(ellipse at 20% 80%,rgba(201,168,76,.08) 0%,transparent 55%)}
+.hero-grid-lines{position:absolute;inset:0;opacity:.04;background-image:linear-gradient(var(--silver) 1px,transparent 1px),linear-gradient(90deg,var(--silver) 1px,transparent 1px);background-size:60px 60px}
+.hero-car-bg{position:absolute;right:-5%;top:50%;transform:translateY(-50%);width:65%;height:75%;background:url('https://images.unsplash.com/photo-1544636331-e26879cd4d9b?w=1200&q=80') center/cover no-repeat;mask-image:linear-gradient(to right,transparent 0%,rgba(0,0,0,.6) 25%,rgba(0,0,0,.9) 60%);-webkit-mask-image:linear-gradient(to right,transparent 0%,rgba(0,0,0,.6) 25%,rgba(0,0,0,.9) 60%);opacity:.35}
+.hero-content{position:relative;z-index:2;max-width:1360px;margin:0 auto;padding:4rem 2rem;width:100%}
+.hero-badge{display:inline-flex;align-items:center;gap:8px;padding:6px 16px;background:rgba(201,168,76,.12);border:1px solid rgba(201,168,76,.3);border-radius:100px;font-size:.75rem;color:var(--gold);letter-spacing:.1em;text-transform:uppercase;margin-bottom:1.5rem}
+.hero-badge::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--gold);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(1.4)}}
+.hero-title{font-size:clamp(2.4rem,5vw,4.2rem);color:var(--white);line-height:1.1;margin-bottom:1.5rem;max-width:620px}
+.hero-title span{color:var(--gold)}
+.hero-desc{font-size:1.05rem;color:rgba(255,255,255,.65);max-width:480px;line-height:1.7;margin-bottom:2.5rem}
+.hero-actions{display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:3.5rem}
+.hero-stats{display:flex;gap:2.5rem;flex-wrap:wrap}
+.stat-num{font-family:'Playfair Display',serif;font-size:2rem;font-weight:700;color:var(--gold);line-height:1}
+.stat-label{font-size:.75rem;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.08em;margin-top:4px}
+.layout-container{max-width:1360px;margin:0 auto;padding:0 2rem}
+.section{padding:5rem 0}.section-dark{background:var(--deep-blue)}.section-gray{background:var(--off-white)}
+.section-header{text-align:center;margin-bottom:3rem}
+.section-eyebrow{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.15em;color:var(--gold);margin-bottom:.75rem}
+.section-title{font-size:clamp(1.8rem,3vw,2.6rem);color:var(--deep-blue);line-height:1.2}
+.section-title.light{color:var(--white)}.section-desc{font-size:1rem;color:var(--text-light);max-width:540px;margin:.75rem auto 0;line-height:1.7}
+.section-desc.light{color:rgba(255,255,255,.6)}
+#block-vehicle-search{background:var(--white);border-radius:var(--radius-lg);box-shadow:var(--shadow-card);padding:1.5rem 2rem}
+.search-title{font-size:.75rem;text-transform:uppercase;letter-spacing:.1em;color:var(--text-light);margin-bottom:1rem;font-weight:600}
+.search-grid{display:grid;grid-template-columns:repeat(4,1fr) auto;gap:1rem;align-items:end}
+.form-group label,.form-group .lbl{display:block;font-size:.75rem;font-weight:600;color:var(--text-mid);margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.06em}
+.form-control{width:100%;padding:.6rem .9rem;border:1.5px solid var(--silver-light);border-radius:var(--radius);font-size:.88rem;color:var(--text-dark);background:var(--off-white);transition:var(--transition);font-family:'DM Sans',sans-serif}
+.form-control:focus{outline:none;border-color:var(--accent-blue);background:var(--white)}
+select.form-control{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%237a8a9e' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right .8rem center;padding-right:2.2rem}
+.vehicles-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1.75rem}
+.vehicle-card{background:var(--white);border-radius:var(--radius-lg);box-shadow:var(--shadow);border:1px solid var(--silver-light);overflow:hidden;transition:var(--transition)}
+.vehicle-card:hover{transform:translateY(-6px);box-shadow:var(--shadow-card);border-color:rgba(201,168,76,.3)}
+.vehicle-card-img{position:relative;height:190px;overflow:hidden;background:var(--off-white)}
+.vehicle-card-img img{width:100%;height:100%;object-fit:cover;transition:transform .4s ease}
+.vehicle-card:hover .vehicle-card-img img{transform:scale(1.05)}
+.vehicle-badge{position:absolute;top:12px;left:12px;padding:3px 10px;border-radius:100px;font-size:.7rem;font-weight:700;text-transform:uppercase}
+.badge-new{background:var(--deep-blue);color:var(--gold)}.badge-used{background:var(--text-mid);color:var(--white)}.badge-sold{background:var(--danger);color:var(--white)}.badge-reserved{background:var(--gold);color:var(--deep-blue)}
+.vehicle-fav{position:absolute;top:12px;right:12px;width:32px;height:32px;background:rgba(255,255,255,.9);border-radius:50%;border:none;display:flex;align-items:center;justify-content:center;font-size:1rem;transition:var(--transition)}
+.vehicle-card-body{padding:1.25rem 1.4rem}
+.vehicle-make{font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;color:var(--gold);font-weight:700;margin-bottom:2px}
+.vehicle-name{font-family:'Playfair Display',serif;font-size:1.15rem;font-weight:600;color:var(--text-dark);margin-bottom:.6rem}
+.vehicle-specs{display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem}
+.vehicle-spec{font-size:.78rem;color:var(--text-light)}
+.vehicle-card-footer{display:flex;align-items:center;justify-content:space-between;padding:.9rem 1.4rem;border-top:1px solid var(--silver-light)}
+.vehicle-price{font-family:'Playfair Display',serif;font-size:1.25rem;font-weight:700;color:var(--deep-blue)}
+.vehicle-price small{font-size:.7rem;color:var(--text-light);font-family:'DM Sans',sans-serif;font-weight:400;display:block}
+.features-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:2rem}
+.feature-card{text-align:center;padding:2rem 1.5rem}
+.feature-icon{width:64px;height:64px;border-radius:50%;margin:0 auto 1.25rem;background:rgba(201,168,76,.1);border:1px solid rgba(201,168,76,.2);display:flex;align-items:center;justify-content:center;font-size:1.6rem}
+.feature-title{font-size:1.05rem;font-weight:600;color:var(--white);margin-bottom:.6rem}
+.feature-desc{font-size:.88rem;color:rgba(255,255,255,.5);line-height:1.65}
+.testimonials-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1.75rem}
+.testimonial-card{background:var(--white);border-radius:var(--radius-lg);padding:1.75rem;box-shadow:var(--shadow);border:1px solid var(--silver-light)}
+.testimonial-stars{color:var(--gold);font-size:.9rem;margin-bottom:.8rem;letter-spacing:3px}
+.testimonial-text{font-size:.92rem;color:var(--text-mid);line-height:1.7;margin-bottom:1.25rem;font-style:italic}
+.cta-band{background:linear-gradient(135deg,var(--mid-blue) 0%,var(--deep-blue) 50%,#0a1628 100%);padding:4rem 0;position:relative;overflow:hidden}
+.cta-inner{display:flex;align-items:center;justify-content:space-between;gap:2rem;flex-wrap:wrap;position:relative;z-index:1}
+.cta-text h2{font-size:clamp(1.6rem,3vw,2.2rem);color:var(--white);margin-bottom:.5rem}
+.cta-text p{color:rgba(255,255,255,.6);font-size:.95rem}
+.financing-grid{display:grid;grid-template-columns:1fr 1fr;gap:4rem;align-items:center}
+.financing-card{background:var(--white);border-radius:var(--radius-lg);padding:2.5rem;box-shadow:var(--shadow-card);border:1px solid var(--silver-light)}
+.financing-card h3{font-size:1.3rem;margin-bottom:1.5rem;color:var(--deep-blue)}
+.calc-result{background:var(--deep-blue);border-radius:var(--radius);padding:1.25rem;margin-top:1.25rem;display:flex;justify-content:space-between;align-items:center}
+.calc-result-label{font-size:.8rem;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.08em}
+.calc-result-amount{font-family:'Playfair Display',serif;font-size:1.8rem;font-weight:700;color:var(--gold)}
+.fin-benefits{display:flex;flex-direction:column;gap:1.5rem}
+.fin-benefit{display:flex;gap:1rem;align-items:flex-start}
+.fin-icon{width:48px;height:48px;border-radius:var(--radius);background:rgba(11,31,58,.06);display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0}
+.fin-title{font-weight:600;font-size:.95rem;color:var(--text-dark);margin-bottom:.25rem}
+.fin-desc{font-size:.85rem;color:var(--text-light);line-height:1.5}
+.about-grid{display:grid;grid-template-columns:1fr 1fr;gap:4rem;align-items:center}
+.about-img-main{width:100%;border-radius:var(--radius-lg);box-shadow:var(--shadow-card);height:420px;object-fit:cover;display:block}
+.about-img-badge{position:absolute;bottom:-1.5rem;right:-1.5rem;background:var(--deep-blue);border-radius:var(--radius-lg);padding:1.25rem 1.5rem;border:1px solid rgba(201,168,76,.25);text-align:center;box-shadow:var(--shadow-card)}
+.about-badge-num{font-family:'Playfair Display',serif;font-size:2.2rem;font-weight:700;color:var(--gold)}
+.about-badge-label{font-size:.72rem;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.1em}
+.about-desc{font-size:.95rem;color:var(--text-mid);line-height:1.75;margin:1rem 0 1.75rem}
+.about-points{display:flex;flex-direction:column;gap:.75rem;margin-bottom:2rem}
+.about-point{display:flex;gap:12px;align-items:flex-start}
+.about-point-icon{width:22px;height:22px;border-radius:50%;background:rgba(201,168,76,.15);border:1px solid rgba(201,168,76,.3);display:flex;align-items:center;justify-content:center;font-size:.7rem;flex-shrink:0;margin-top:1px}
+.about-point-text{font-size:.9rem;color:var(--text-mid);line-height:1.5}
+.admin-sidebar{width:260px;min-height:calc(100vh - 72px);background:var(--deep-blue);padding:1.5rem 0;flex-shrink:0;position:sticky;top:72px;height:calc(100vh - 72px);overflow-y:auto}
+.admin-sidebar-header{padding:0 1.25rem 1.25rem;border-bottom:1px solid rgba(255,255,255,.06);margin-bottom:.75rem}
+.admin-sidebar-header h3{font-size:.65rem;text-transform:uppercase;letter-spacing:.14em;color:rgba(255,255,255,.35);font-family:'DM Sans',sans-serif}
+.admin-nav-item{display:flex;align-items:center;gap:10px;padding:.65rem 1.25rem;font-size:.85rem;color:rgba(255,255,255,.65);transition:var(--transition);cursor:pointer;border-left:3px solid transparent;font-weight:500}
+.admin-nav-item:hover{background:rgba(255,255,255,.05);color:var(--white)}
+.admin-nav-item.active{background:rgba(201,168,76,.1);color:var(--gold);border-left-color:var(--gold)}
+.admin-nav-section{padding:1.5rem 1.25rem .5rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.15em;color:rgba(255,255,255,.25)}
+.admin-main{flex:1;padding:2rem;overflow-x:hidden}
+.admin-topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:2rem;flex-wrap:wrap;gap:1rem}
+.admin-topbar h1{font-size:1.4rem;color:var(--text-dark)}
+.admin-topbar-right{display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
+.admin-search{padding:.5rem 1rem;border:1.5px solid var(--silver-light);border-radius:var(--radius);font-size:.85rem;width:220px;background:var(--white);font-family:'DM Sans',sans-serif}
+.admin-search:focus{outline:none;border-color:var(--accent-blue)}
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1.25rem;margin-bottom:2rem}
+.kpi-card{background:var(--white);border-radius:var(--radius-lg);padding:1.4rem 1.5rem;box-shadow:0 1px 8px rgba(11,31,58,.07);border:1px solid var(--silver-light)}
+.kpi-top{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:.8rem}
+.kpi-icon{width:40px;height:40px;border-radius:var(--radius);display:flex;align-items:center;justify-content:center;font-size:1.1rem}
+.kpi-badge{font-size:.72rem;font-weight:700;padding:3px 8px;border-radius:100px}
+.badge-up{background:#dcf5e7;color:var(--success)}.badge-down{background:#fde8e7;color:var(--danger)}
+.kpi-value{font-family:'Playfair Display',serif;font-size:1.8rem;font-weight:700;color:var(--text-dark);line-height:1;margin-bottom:4px}
+.kpi-label{font-size:.78rem;color:var(--text-light)}
+.admin-grid-2{display:grid;grid-template-columns:2fr 1fr;gap:1.5rem;margin-bottom:1.5rem}
+.admin-card{background:var(--white);border-radius:var(--radius-lg);box-shadow:0 1px 8px rgba(11,31,58,.07);border:1px solid var(--silver-light);overflow:hidden}
+.admin-card-header{padding:1.1rem 1.5rem;border-bottom:1px solid var(--silver-light);display:flex;align-items:center;justify-content:space-between}
+.admin-card-header h3{font-size:.95rem;font-weight:600;color:var(--text-dark)}
+.admin-card-body{padding:1.25rem 1.5rem}
+.chart-bars{display:flex;gap:10px;align-items:flex-end;height:140px;padding:0 4px}
+.chart-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px}
+.chart-bar{width:100%;border-radius:4px 4px 0 0;background:var(--accent-blue)}
+.chart-bar.gold{background:linear-gradient(to top,var(--gold),var(--gold-light))}
+.chart-bar-label{font-size:.65rem;color:var(--text-light)}
+.data-table{width:100%;border-collapse:collapse;font-size:.85rem}
+.data-table th{text-align:left;padding:.6rem .9rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-light);font-weight:600;border-bottom:1px solid var(--silver-light)}
+.data-table td{padding:.75rem .9rem;border-bottom:1px solid var(--silver-light);color:var(--text-mid);vertical-align:middle}
+.data-table tr:last-child td{border-bottom:none}
+.data-table tr:hover td{background:var(--off-white)}
+.status-pill{display:inline-block;padding:2px 10px;border-radius:100px;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.pill-available{background:#dcf5e7;color:#1a6b3c}.pill-sold{background:#fde8e7;color:var(--danger)}.pill-reserved{background:#fff4dc;color:#8a5e0a}
+.progress-item{margin-bottom:1rem}
+.progress-header{display:flex;justify-content:space-between;font-size:.8rem;margin-bottom:.4rem;color:var(--text-mid)}
+.progress-bar{height:6px;background:var(--silver-light);border-radius:3px;overflow:hidden}
+.progress-fill{height:100%;border-radius:3px;background:var(--accent-blue)}
+.progress-fill.gold{background:linear-gradient(to right,var(--gold),var(--gold-light))}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem}
+.form-group{margin-bottom:1rem}
+.form-group label{display:block;font-size:.78rem;font-weight:600;color:var(--text-mid);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.4rem}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2000;align-items:center;justify-content:center;backdrop-filter:blur(4px);padding:1rem}
+.modal-overlay.open{display:flex}
+.modal{background:var(--white);border-radius:var(--radius-lg);box-shadow:0 20px 60px rgba(0,0,0,.3);max-width:580px;width:100%;max-height:90vh;overflow-y:auto}
+.modal-header{padding:1.5rem 2rem;border-bottom:1px solid var(--silver-light);display:flex;align-items:center;justify-content:space-between}
+.modal-header h2{font-size:1.3rem;color:var(--deep-blue)}
+.modal-close{background:none;border:none;font-size:1.4rem;color:var(--text-light);cursor:pointer}
+.modal-body{padding:2rem}.modal-footer{padding:1.25rem 2rem;border-top:1px solid var(--silver-light);display:flex;justify-content:flex-end;gap:.75rem}
+#region-footer{background:var(--deep-blue);padding:4rem 0 0}
+.footer-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:3rem;padding-bottom:3rem;border-bottom:1px solid rgba(255,255,255,.08)}
+.footer-tagline{font-size:.88rem;color:rgba(255,255,255,.45);line-height:1.6;margin:1rem 0 1.5rem;max-width:280px}
+.footer-socials{display:flex;gap:.75rem}
+.social-btn{width:36px;height:36px;border-radius:var(--radius);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;font-size:.85rem;color:rgba(255,255,255,.6);transition:var(--transition);cursor:pointer}
+.social-btn:hover{background:rgba(201,168,76,.15);color:var(--gold)}
+.footer-col h4{font-size:.78rem;text-transform:uppercase;letter-spacing:.12em;color:var(--gold);margin-bottom:1.2rem;font-family:'DM Sans',sans-serif;font-weight:700}
+.footer-col ul li{margin-bottom:.6rem}
+.footer-col ul li a{font-size:.88rem;color:rgba(255,255,255,.5);cursor:pointer;transition:var(--transition)}
+.footer-col ul li a:hover{color:var(--white)}
+.footer-bottom{padding:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem}
+.footer-bottom p{font-size:.8rem;color:rgba(255,255,255,.3)}
+.footer-bottom-links a{font-size:.8rem;color:rgba(255,255,255,.3);margin-left:1.5rem;transition:var(--transition)}
+.footer-bottom-links a:hover{color:rgba(255,255,255,.6)}
+.toast{position:fixed;bottom:2rem;right:2rem;z-index:3000;background:var(--deep-blue);color:var(--white);padding:1rem 1.5rem;border-radius:var(--radius-lg);box-shadow:var(--shadow-card);font-size:.88rem;border-left:4px solid var(--gold);transform:translateX(120%);transition:transform .35s ease;max-width:320px}
+.toast.show{transform:translateX(0)}
+.toast-title{font-weight:600;margin-bottom:2px}.toast-msg{color:rgba(255,255,255,.65);font-size:.82rem}
+.page{display:none}.page.active{display:block}
+#page-admin.active{display:flex}
+.admin-tab-panel{display:none}.admin-tab-panel.active{display:block}
+.spinner{display:inline-block;width:20px;height:20px;border:2px solid rgba(0,0,0,.1);border-radius:50%;border-top-color:var(--gold);animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.skeleton{background:linear-gradient(90deg,#f0f2f5 25%,#e8eaef 50%,#f0f2f5 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:var(--radius)}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@media(max-width:1024px){.search-grid{grid-template-columns:1fr 1fr}.about-grid,.financing-grid{grid-template-columns:1fr}.kpi-grid{grid-template-columns:repeat(2,1fr)}.admin-grid-2{grid-template-columns:1fr}.footer-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:768px){#block-primary-menu{display:none}.admin-sidebar{display:none}.kpi-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:480px){.search-grid,.form-row{grid-template-columns:1fr}.kpi-grid{grid-template-columns:1fr}.footer-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<!-- LOADING SCREEN -->
+<div id="app-loading">
+  <div class="loading-logo">Joshua &amp; Family</div>
+  <div class="loading-sub">Car Dealership · Mombasa</div>
+  <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+</div>
+
+<!-- AUTH SCREEN -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <div class="auth-logo-mark">J</div>
+    <div class="auth-title">Joshua &amp; Family</div>
+    <div class="auth-sub">Car Dealership Portal</div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" onclick="switchAuthTab('login')">Sign In</button>
+      <button class="auth-tab" onclick="switchAuthTab('register')">Register</button>
+    </div>
+    <div id="auth-error" class="auth-error"></div>
+    <div id="auth-login" class="auth-form active">
+      <label class="auth-label">Email Address</label>
+      <input class="auth-input" type="email" id="login-email" placeholder="your@email.com" autocomplete="email">
+      <label class="auth-label">Password</label>
+      <input class="auth-input" type="password" id="login-password" placeholder="••••••••" autocomplete="current-password">
+      <button class="auth-btn" id="login-btn" onclick="doLogin()">Sign In</button>
+    </div>
+    <div id="auth-register" class="auth-form">
+      <div class="auth-two-col">
+        <div><label class="auth-label">First Name</label><input class="auth-input" type="text" id="reg-first" placeholder="John"></div>
+        <div><label class="auth-label">Last Name</label><input class="auth-input" type="text" id="reg-last" placeholder="Doe"></div>
+      </div>
+      <label class="auth-label">Email</label>
+      <input class="auth-input" type="email" id="reg-email" placeholder="your@email.com">
+      <label class="auth-label">Phone</label>
+      <input class="auth-input" type="tel" id="reg-phone" placeholder="+254 700 000 000">
+      <label class="auth-label">Password (min 8 chars)</label>
+      <input class="auth-input" type="password" id="reg-password" placeholder="••••••••">
+      <button class="auth-btn" id="register-btn" onclick="doRegister()">Create Account</button>
+    </div>
+    <div class="auth-guest"><a onclick="enterAsGuest()">Continue as guest →</a></div>
+  </div>
+</div>
+
+<!-- HEADER -->
+<header id="region-header" style="display:none">
+  <div class="header-inner">
+    <div class="site-logo" onclick="showPage('home')">
+      <div class="logo-mark">J</div>
+      <div class="logo-text"><span class="logo-name">Joshua &amp; Family</span><span class="logo-sub">Car Dealership</span></div>
+    </div>
+    <div id="block-primary-menu">
+      <nav><ul>
+        <li><a class="active" onclick="return navTo('home',this)">Home</a></li>
+        <li><a onclick="return navTo('inventory',this)">Inventory</a></li>
+        <li><a onclick="return navTo('financing',this)">Financing</a></li>
+        <li><a onclick="return navTo('about',this)">About</a></li>
+        <li><a onclick="return navTo('contact',this)">Contact</a></li>
+      </ul></nav>
+    </div>
+    <div class="header-actions">
+      <button class="notif-btn" id="notif-btn" onclick="openModal('notif-modal')" title="Notifications">🔔<span class="notif-badge" id="notif-badge">0</span></button>
+      <div id="user-chip" class="user-chip" style="display:none" onclick="openModal('profile-modal')">
+        <div class="user-avatar" id="user-avatar">?</div>
+        <span class="user-name" id="user-name">User</span>
+      </div>
+      <button id="header-login-btn" class="btn btn-outline btn-sm" onclick="showAuthScreen()">Sign In</button>
+      <button class="btn btn-gold btn-sm" id="admin-btn" style="display:none" onclick="showPage('admin')">Admin Dashboard</button>
+    </div>
+  </div>
+</header>
+
+<!-- HOME PAGE -->
+<div id="page-home" class="page">
+  <section id="region-hero">
+    <div class="hero-bg"></div><div class="hero-grid-lines"></div>
+    <div class="hero-car-bg"></div>
+    <div class="hero-content">
+      <div class="hero-badge">🏆 Mombasa's Trusted Family Dealership</div>
+      <h1 class="hero-title">Drive Your <span>Dream</span><br>Vehicle Today</h1>
+      <p class="hero-desc">Premium new &amp; pre-owned vehicles with transparent pricing, flexible financing, and the family service you deserve.</p>
+      <div class="hero-actions">
+        <button class="btn btn-gold btn-lg" onclick="navTo('inventory',null)">Browse Inventory</button>
+        <button class="btn btn-outline btn-lg" onclick="openModal('testdrive-modal')">Book Test Drive</button>
+      </div>
+      <div class="hero-stats">
+        <div><div class="stat-num" id="stat-sold">500+</div><div class="stat-label">Vehicles Sold</div></div>
+        <div><div class="stat-num">15+</div><div class="stat-label">Years in Business</div></div>
+        <div><div class="stat-num" id="stat-cust">2,000+</div><div class="stat-label">Happy Customers</div></div>
+        <div><div class="stat-num">4.9★</div><div class="stat-label">Google Rating</div></div>
+      </div>
+    </div>
+  </section>
+
+  <div style="background:var(--off-white);padding:2.5rem 2rem">
+    <div class="layout-container">
+      <div id="block-vehicle-search" style="max-width:1000px;margin:0 auto">
+        <p class="search-title">🔍 Search Our Inventory</p>
+        <div class="search-grid">
+          <div class="form-group"><label>Make</label><select class="form-control" id="h-make"><option value="">All Makes</option></select></div>
+          <div class="form-group"><label>Condition</label><select class="form-control" id="h-condition"><option value="">Any</option><option value="new">New</option><option value="used">Used</option></select></div>
+          <div class="form-group"><label>Price Range</label><select class="form-control" id="h-price"><option value="">Any Price</option><option value="0-1000000">Under KES 1M</option><option value="1000000-3000000">KES 1M–3M</option><option value="3000000-6000000">KES 3M–6M</option><option value="6000000-99999999">Above KES 6M</option></select></div>
+          <div class="form-group"><label>Year</label><select class="form-control" id="h-year"><option value="">Any Year</option><option>2024</option><option>2023</option><option>2022</option><option>2021</option><option>2020</option></select></div>
+          <button class="btn btn-gold" style="height:42px" onclick="doSearch()">Search</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <section class="section">
+    <div class="layout-container">
+      <div class="section-header">
+        <div class="section-eyebrow">Our Collection</div>
+        <h2 class="section-title">Featured Vehicles</h2>
+        <p class="section-desc">Hand-selected vehicles that blend performance, comfort, and value.</p>
+      </div>
+      <div class="vehicles-grid" id="featured-vehicles">
+        <div style="text-align:center;padding:3rem;grid-column:1/-1;color:var(--text-light)"><div class="spinner"></div><p style="margin-top:1rem">Loading vehicles...</p></div>
+      </div>
+      <div style="text-align:center;margin-top:2.5rem">
+        <button class="btn btn-blue btn-lg" onclick="navTo('inventory',null)">View All Inventory →</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-dark">
+    <div class="layout-container">
+      <div class="section-header">
+        <div class="section-eyebrow">Why Joshua &amp; Family</div>
+        <h2 class="section-title light">The Dealership Difference</h2>
+        <p class="section-desc light">We're not just selling cars — we're building lasting relationships with families across Mombasa.</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card"><div class="feature-icon">🤝</div><h3 class="feature-title">Family Values</h3><p class="feature-desc">15 years of trust built one family at a time.</p></div>
+        <div class="feature-card"><div class="feature-icon">🔍</div><h3 class="feature-title">Transparent Pricing</h3><p class="feature-desc">No hidden fees. Every listed price is what you pay.</p></div>
+        <div class="feature-card"><div class="feature-icon">💳</div><h3 class="feature-title">Flexible Financing</h3><p class="feature-desc">M-Pesa, bank loans, hire purchase — we fit your budget.</p></div>
+        <div class="feature-card"><div class="feature-icon">🔧</div><h3 class="feature-title">After-Sale Service</h3><p class="feature-desc">Full servicing and genuine spare parts under one roof.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="layout-container">
+      <div class="about-grid">
+        <div style="position:relative">
+          <img src="https://images.unsplash.com/photo-1560179707-f14e90ef3623?w=700&q=80" alt="Dealership" class="about-img-main">
+          <div class="about-img-badge"><div class="about-badge-num">15+</div><div class="about-badge-label">Years Serving<br>Mombasa</div></div>
+        </div>
+        <div>
+          <div class="section-eyebrow">Our Story</div>
+          <h2 class="section-title">A Family Business Built on Trust</h2>
+          <p class="about-desc">Founded in 2009 by Joshua Mwenda, our dealership has grown into one of the Coast's most respected automotive destinations, serving thousands of Kenyan families with pride.</p>
+          <div class="about-points">
+            <div class="about-point"><div class="about-point-icon">✓</div><div class="about-point-text">Fully licensed — CBK-approved financing partners</div></div>
+            <div class="about-point"><div class="about-point-icon">✓</div><div class="about-point-text">Comprehensive vehicle inspection on every unit</div></div>
+            <div class="about-point"><div class="about-point-icon">✓</div><div class="about-point-text">Customer service 7 days a week, 8am–7pm</div></div>
+          </div>
+          <button class="btn btn-gold" onclick="navTo('about',null)">Learn More About Us</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="cta-band">
+    <div class="layout-container">
+      <div class="cta-inner">
+        <div class="cta-text"><h2>Ready to Find Your Perfect Vehicle?</h2><p>Schedule a test drive today — no commitment, no pressure.</p></div>
+        <div style="display:flex;gap:1rem;flex-wrap:wrap">
+          <button class="btn btn-gold btn-lg" onclick="openModal('testdrive-modal')">Book Test Drive</button>
+          <button class="btn btn-outline btn-lg" onclick="openModal('inquiry-modal')">Send Inquiry</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <section class="section section-gray">
+    <div class="layout-container">
+      <div class="section-header"><div class="section-eyebrow">Customer Reviews</div><h2 class="section-title">What Our Clients Say</h2></div>
+      <div class="testimonials-grid">
+        <div class="testimonial-card"><div class="testimonial-stars">★★★★★</div><p class="testimonial-text">"Joshua's team made buying my first car completely stress-free. They explained every option and delivered my Prado in perfect condition."</p><div style="display:flex;align-items:center;gap:12px"><div style="width:40px;height:40px;border-radius:50%;background:var(--silver-light);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--deep-blue)">AK</div><div><div style="font-weight:600;font-size:.88rem">Amina Kariuki</div><div style="font-size:.75rem;color:var(--text-light)">Toyota Prado 2022</div></div></div></div>
+        <div class="testimonial-card"><div class="testimonial-stars">★★★★★</div><p class="testimonial-text">"Outstanding service from inquiry to delivery. The M-Pesa financing was seamless. I've referred five friends already!"</p><div style="display:flex;align-items:center;gap:12px"><div style="width:40px;height:40px;border-radius:50%;background:var(--silver-light);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--deep-blue)">JM</div><div><div style="font-weight:600;font-size:.88rem">James Mwangi</div><div style="font-size:.75rem;color:var(--text-light)">Mercedes-Benz GLE 2021</div></div></div></div>
+        <div class="testimonial-card"><div class="testimonial-stars">★★★★★</div><p class="testimonial-text">"Best car dealership in Mombasa. Transparent pricing, genuine cars, exceptional after-sales service. They treat you like family."</p><div style="display:flex;align-items:center;gap:12px"><div style="width:40px;height:40px;border-radius:50%;background:var(--silver-light);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--deep-blue)">FO</div><div><div style="font-weight:600;font-size:.88rem">Fatuma Odhiambo</div><div style="font-size:.75rem;color:var(--text-light)">Honda CR-V 2023</div></div></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="layout-container">
+      <div class="section-header"><div class="section-eyebrow">Finance Your Vehicle</div><h2 class="section-title">Flexible Payment Plans</h2><p class="section-desc">Calculate your monthly installment and get pre-approved in minutes.</p></div>
+      <div class="financing-grid">
+        <div class="financing-card">
+          <h3>Payment Calculator</h3>
+          <div class="form-group"><label>Vehicle Price (KES)</label><input type="number" class="form-control" id="calc-price" value="3500000" oninput="calcPayment()"></div>
+          <div class="form-group"><label>Down Payment (KES)</label><input type="number" class="form-control" id="calc-down" value="700000" oninput="calcPayment()"></div>
+          <div class="form-group"><label>Loan Term</label><select class="form-control" id="calc-term" onchange="calcPayment()"><option value="12">12 months</option><option value="24">24 months</option><option value="36" selected>36 months</option><option value="48">48 months</option><option value="60">60 months</option></select></div>
+          <div class="form-group"><label>Interest Rate (%)</label><input type="number" class="form-control" id="calc-rate" value="13" step="0.5" oninput="calcPayment()"></div>
+          <div class="calc-result">
+            <div><div class="calc-result-label">Est. Monthly Payment</div><div class="calc-result-amount" id="calc-result">KES 97,800</div></div>
+            <button class="btn btn-gold" onclick="openModal('financing-modal')">Apply Now →</button>
+          </div>
+        </div>
+        <div class="fin-benefits">
+          <div class="fin-benefit"><div class="fin-icon">💰</div><div><div class="fin-title">M-Pesa Payments</div><div class="fin-desc">Pay monthly installments directly via M-Pesa.</div></div></div>
+          <div class="fin-benefit"><div class="fin-icon">🏦</div><div><div class="fin-title">Bank Financing</div><div class="fin-desc">Partnered with KCB, Equity, Stanchart for competitive rates.</div></div></div>
+          <div class="fin-benefit"><div class="fin-icon">📋</div><div><div class="fin-title">Hire Purchase</div><div class="fin-desc">Drive away with as little as 20% down. Up to 60 months.</div></div></div>
+          <div class="fin-benefit"><div class="fin-icon">⚡</div><div><div class="fin-title">Fast Approval</div><div class="fin-desc">Pre-approval within 24 hours. Same-day decision available.</div></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- INVENTORY PAGE -->
+<div id="page-inventory" class="page" style="padding-top:72px">
+  <div style="background:var(--deep-blue);padding:3rem 2rem">
+    <div class="layout-container">
+      <div class="section-eyebrow">Our Collection</div>
+      <h1 style="font-size:2.2rem;color:var(--white);margin-bottom:.5rem">Vehicle Inventory</h1>
+      <p style="color:rgba(255,255,255,.5)">Browse our full selection of new and pre-owned vehicles</p>
+    </div>
+  </div>
+  <section class="section section-gray" style="padding-top:2.5rem">
+    <div class="layout-container">
+      <div id="block-vehicle-search" style="margin-bottom:2rem">
+        <p class="search-title">🔍 Filter Inventory</p>
+        <div class="search-grid">
+          <div class="form-group"><label>Make</label><select class="form-control" id="inv-make"><option value="">All Makes</option></select></div>
+          <div class="form-group"><label>Condition</label><select class="form-control" id="inv-condition"><option value="">Any</option><option value="new">New</option><option value="used">Used</option></select></div>
+          <div class="form-group"><label>Price Range</label><select class="form-control" id="inv-price"><option value="">Any Price</option><option value="0-1000000">Under KES 1M</option><option value="1000000-3000000">KES 1M–3M</option><option value="3000000-6000000">KES 3M–6M</option><option value="6000000-99999999">Above KES 6M</option></select></div>
+          <div class="form-group"><label>Fuel Type</label><select class="form-control" id="inv-fuel"><option value="">Any</option><option value="petrol">Petrol</option><option value="diesel">Diesel</option><option value="hybrid">Hybrid</option><option value="electric">Electric</option></select></div>
+          <button class="btn btn-gold" style="height:42px" onclick="loadInventory()">Search</button>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:1rem">
+        <p style="font-size:.88rem;color:var(--text-light)">Showing <strong id="inv-count" style="color:var(--text-dark)">0</strong> vehicles</p>
+        <select class="form-control" style="width:auto;padding:.4rem .8rem;font-size:.82rem" id="inv-sort" onchange="loadInventory()">
+          <option value="">Latest First</option><option value="price_asc">Price: Low→High</option><option value="price_desc">Price: High→Low</option><option value="year">Newest Year</option>
+        </select>
+      </div>
+      <div class="vehicles-grid" id="inventory-grid"><div style="text-align:center;padding:3rem;grid-column:1/-1;color:var(--text-light)"><div class="spinner"></div></div></div>
+      <div style="text-align:center;margin-top:2rem" id="load-more-wrap" style="display:none">
+        <button class="btn btn-blue" id="load-more-btn" onclick="loadMoreVehicles()">Load More Vehicles</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ABOUT PAGE -->
+<div id="page-about" class="page" style="padding-top:72px">
+  <div style="background:var(--deep-blue);padding:4rem 2rem">
+    <div class="layout-container" style="text-align:center">
+      <div class="section-eyebrow">Our Story</div>
+      <h1 style="font-size:2.5rem;color:var(--white);margin-bottom:1rem">About Joshua &amp; Family</h1>
+      <p style="color:rgba(255,255,255,.55);max-width:560px;margin:0 auto;line-height:1.7">15 years of trust, commitment, and excellence in Kenyan automotive.</p>
+    </div>
+  </div>
+  <section class="section">
+    <div class="layout-container">
+      <div class="about-grid">
+        <div>
+          <div class="section-eyebrow">Who We Are</div>
+          <h2 class="section-title">More Than Just Cars</h2>
+          <p class="about-desc">Joshua and Family Car Dealership was established in 2009 by Joshua Mwenda and his family with a vision to bring world-class automotive service to Mombasa. Today we operate a 5-acre facility housing over 150 vehicles at any given time.</p>
+          <p class="about-desc">Our 35 dedicated professionals share one mission: making your car-buying journey exceptional from start to finish.</p>
+          <div class="about-points">
+            <div class="about-point"><div class="about-point-icon">✓</div><div class="about-point-text">Member: Kenya Motor Industry Association (KMIA)</div></div>
+            <div class="about-point"><div class="about-point-icon">✓</div><div class="about-point-text">Authorized dealer: Toyota Kenya, Honda East Africa</div></div>
+            <div class="about-point"><div class="about-point-icon">✓</div><div class="about-point-text">CBK-licensed consumer credit provider</div></div>
+            <div class="about-point"><div class="about-point-icon">✓</div><div class="about-point-text">ISO 9001:2015 Certified Service Center</div></div>
+          </div>
+        </div>
+        <div style="position:relative">
+          <img src="https://images.unsplash.com/photo-1567818735868-e71b99932e29?w=700&q=80" alt="Team" class="about-img-main">
+          <div class="about-img-badge"><div class="about-badge-num">35+</div><div class="about-badge-label">Team<br>Members</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- CONTACT PAGE -->
+<div id="page-contact" class="page" style="padding-top:72px">
+  <div style="background:var(--deep-blue);padding:4rem 2rem">
+    <div class="layout-container" style="text-align:center">
+      <div class="section-eyebrow">Get In Touch</div>
+      <h1 style="font-size:2.5rem;color:var(--white);margin-bottom:1rem">Contact Us</h1>
+      <p style="color:rgba(255,255,255,.55)">Our team is ready to help you find the perfect vehicle</p>
+    </div>
+  </div>
+  <section class="section">
+    <div class="layout-container">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:3rem">
+        <div>
+          <h2 style="font-size:1.4rem;margin-bottom:1.5rem;color:var(--deep-blue)">Send Us a Message</h2>
+          <div class="form-row"><div class="form-group"><label>First Name</label><input class="form-control" type="text" id="contact-first" placeholder="John"></div><div class="form-group"><label>Last Name</label><input class="form-control" type="text" id="contact-last" placeholder="Doe"></div></div>
+          <div class="form-group"><label>Email</label><input class="form-control" type="email" id="contact-email" placeholder="john@example.com"></div>
+          <div class="form-group"><label>Phone</label><input class="form-control" type="tel" id="contact-phone" placeholder="+254 700 000 000"></div>
+          <div class="form-group"><label>Subject</label><select class="form-control" id="contact-subject"><option>Vehicle Inquiry</option><option>Test Drive Request</option><option>Financing Query</option><option>Service Booking</option><option>Other</option></select></div>
+          <div class="form-group"><label>Message</label><textarea class="form-control" id="contact-message" rows="4" placeholder="Tell us how we can help..."></textarea></div>
+          <button class="btn btn-gold btn-lg" onclick="submitContact()">Send Message</button>
+        </div>
+        <div>
+          <h2 style="font-size:1.4rem;margin-bottom:1.5rem;color:var(--deep-blue)">Visit Us</h2>
+          <div style="background:var(--off-white);border-radius:var(--radius-lg);padding:2rem;margin-bottom:1.5rem">
+            <div style="display:flex;flex-direction:column;gap:1.25rem">
+              <div style="display:flex;gap:12px"><span style="font-size:1.3rem">📍</span><div><strong>Address</strong><br><span style="color:var(--text-light);font-size:.9rem">Mombasa-Nairobi Highway Km 12, Miritini, Mombasa County</span></div></div>
+              <div style="display:flex;gap:12px"><span style="font-size:1.3rem">📞</span><div><strong>Phone</strong><br><span style="color:var(--text-light);font-size:.9rem">+254 715 187 321</span></div></div>
+              <div style="display:flex;gap:12px"><span style="font-size:1.3rem">✉️</span><div><strong>Email</strong><br><span style="color:var(--text-light);font-size:.9rem">kamadijoshua057@gmail.com</span></div></div>
+              <div style="display:flex;gap:12px"><span style="font-size:1.3rem">🕐</span><div><strong>Hours</strong><br><span style="color:var(--text-light);font-size:.9rem">Mon–Fri: 8am–7pm &nbsp;|&nbsp; Sat–Sun: 9am–5pm</span></div></div>
+            </div>
+          </div>
+          <div style="background:var(--deep-blue);border-radius:var(--radius-lg);padding:2rem">
+            <h3 style="font-size:1rem;margin-bottom:.75rem;color:var(--gold)">WhatsApp Us</h3>
+            <p style="font-size:.88rem;color:rgba(255,255,255,.6);margin-bottom:1rem">Chat with our sales team directly for quick responses.</p>
+            <button class="btn btn-gold" onclick="showToast('WhatsApp','Opening WhatsApp chat...')">📱 Chat on WhatsApp</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- FINANCING PAGE -->
+<div id="page-financing" class="page" style="padding-top:72px">
+  <div style="background:var(--deep-blue);padding:4rem 2rem">
+    <div class="layout-container" style="text-align:center">
+      <div class="section-eyebrow">Financing Options</div>
+      <h1 style="font-size:2.5rem;color:var(--white);margin-bottom:1rem">Drive Now, Pay Over Time</h1>
+    </div>
+  </div>
+  <section class="section">
+    <div class="layout-container">
+      <div class="features-grid" style="margin-bottom:3rem">
+        <div style="background:var(--off-white);border-radius:var(--radius-lg);text-align:center;padding:2rem"><div style="font-size:2rem;margin-bottom:1rem">💳</div><h3 style="font-size:1rem;font-weight:600;color:var(--deep-blue);margin-bottom:.6rem">M-Pesa Finance</h3><p style="font-size:.88rem;color:var(--text-light)">Flexible M-Pesa installments. No bank account required.</p></div>
+        <div style="background:var(--off-white);border-radius:var(--radius-lg);text-align:center;padding:2rem"><div style="font-size:2rem;margin-bottom:1rem">🏦</div><h3 style="font-size:1rem;font-weight:600;color:var(--deep-blue);margin-bottom:.6rem">Bank Auto Loan</h3><p style="font-size:.88rem;color:var(--text-light)">KCB, Equity, Stanchart, NCBA, Co-op Bank partners.</p></div>
+        <div style="background:var(--off-white);border-radius:var(--radius-lg);text-align:center;padding:2rem"><div style="font-size:2rem;margin-bottom:1rem">📋</div><h3 style="font-size:1rem;font-weight:600;color:var(--deep-blue);margin-bottom:.6rem">Hire Purchase</h3><p style="font-size:.88rem;color:var(--text-light)">20% deposit, up to 60 months. Simple eligibility.</p></div>
+        <div style="background:var(--off-white);border-radius:var(--radius-lg);text-align:center;padding:2rem"><div style="font-size:2rem;margin-bottom:1rem">⚡</div><h3 style="font-size:1rem;font-weight:600;color:var(--deep-blue);margin-bottom:.6rem">Same-Day Approval</h3><p style="font-size:.88rem;color:var(--text-light)">Submit documents online. Decision within hours.</p></div>
+      </div>
+      <div style="text-align:center"><button class="btn btn-gold btn-lg" onclick="openModal('financing-modal')">Apply for Financing</button></div>
+    </div>
+  </section>
+</div>
+
+<!-- ADMIN DASHBOARD -->
+<div id="page-admin" class="page" style="padding-top:72px;min-height:100vh;background:#f0f2f5">
+  <div style="display:flex">
+    <aside class="admin-sidebar">
+      <div class="admin-sidebar-header"><h3>Admin Panel</h3></div>
+      <div class="admin-nav-item active" onclick="switchTab('dashboard',this)">📊 Dashboard</div>
+      <div class="admin-nav-section">Inventory</div>
+      <div class="admin-nav-item" onclick="switchTab('vehicles',this)">🚗 Vehicles</div>
+      <div class="admin-nav-item" onclick="switchTab('addvehicle',this)">➕ Add Vehicle</div>
+      <div class="admin-nav-section">CRM</div>
+      <div class="admin-nav-item" onclick="switchTab('customers',this)">👥 Customers</div>
+      <div class="admin-nav-item" onclick="switchTab('leads',this)">📨 Leads</div>
+      <div class="admin-nav-section">Sales</div>
+      <div class="admin-nav-item" onclick="switchTab('sales',this)">💰 Sales</div>
+      <div class="admin-nav-item" onclick="switchTab('testdrives',this)">📅 Test Drives</div>
+      <div class="admin-nav-section">Finance</div>
+      <div class="admin-nav-item" onclick="switchTab('financing-apps',this)">🏦 Financing Apps</div>
+      <div class="admin-nav-section">Reports</div>
+      <div class="admin-nav-item" onclick="switchTab('analytics',this)">📈 Analytics</div>
+      <div class="admin-nav-item" onclick="switchTab('users',this)">👤 Users</div>
+      <div style="padding:1rem 1.25rem 1.5rem;margin-top:1rem">
+        <div class="admin-nav-item" style="border:1px solid rgba(255,255,255,.08);border-radius:var(--radius)" onclick="showPage('home')">← Back to Website</div>
+      </div>
+    </aside>
+    <main class="admin-main">
+      <!-- DASHBOARD -->
+      <div class="admin-tab-panel active" id="tab-dashboard">
+        <div class="admin-topbar">
+          <div><h1 id="admin-greeting" style="font-family:'Playfair Display',serif">Dashboard</h1><p style="font-size:.82rem;color:var(--text-light);margin-top:2px">Live dealership overview</p></div>
+          <div class="admin-topbar-right"><input class="admin-search" placeholder="🔍 Search..."><button class="btn btn-gold btn-sm" onclick="switchTab('addvehicle',null)">+ Add Vehicle</button></div>
+        </div>
+        <div class="kpi-grid" id="kpi-grid">
+          <div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:#eef2ff">🚗</div></div><div class="kpi-value skeleton" style="height:2rem;width:80px">&nbsp;</div><div class="kpi-label">Available Vehicles</div></div>
+          <div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:#fef9ee">💰</div></div><div class="kpi-value skeleton" style="height:2rem;width:120px">&nbsp;</div><div class="kpi-label">Revenue This Month</div></div>
+          <div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:#eefaf3">✅</div></div><div class="kpi-value skeleton" style="height:2rem;width:60px">&nbsp;</div><div class="kpi-label">Sales This Month</div></div>
+          <div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:#fff0f0">📅</div></div><div class="kpi-value skeleton" style="height:2rem;width:60px">&nbsp;</div><div class="kpi-label">Pending Test Drives</div></div>
+        </div>
+        <div class="admin-grid-2">
+          <div class="admin-card">
+            <div class="admin-card-header"><h3>Monthly Revenue (KES)</h3></div>
+            <div class="admin-card-body"><div class="chart-bars" id="revenue-chart"><div style="width:100%;text-align:center;color:var(--text-light)"><div class="spinner"></div></div></div></div>
+          </div>
+          <div class="admin-card">
+            <div class="admin-card-header"><h3>Inventory Status</h3></div>
+            <div class="admin-card-body" id="inventory-status-chart"><div class="spinner"></div></div>
+          </div>
+        </div>
+        <div class="admin-card">
+          <div class="admin-card-header"><h3>Recent Sales</h3><button class="btn btn-sm btn-blue" onclick="dlReport('sales','excel')">Export Excel</button></div>
+          <div style="padding:0"><table class="data-table"><thead><tr><th>Invoice</th><th>Customer</th><th>Vehicle</th><th>Amount</th><th>Method</th><th>Status</th></tr></thead><tbody id="recent-sales-body"><tr><td colspan="6" style="text-align:center;padding:2rem"><div class="spinner"></div></td></tr></tbody></table></div>
+        </div>
+      </div>
+      <!-- VEHICLES -->
+      <div class="admin-tab-panel" id="tab-vehicles">
+        <div class="admin-topbar">
+          <h1 style="font-family:'Playfair Display',serif">Vehicle Inventory</h1>
+          <div class="admin-topbar-right">
+            <input class="admin-search" placeholder="🔍 Search..." id="vehicle-search-input" oninput="filterAdminVehicles()">
+            <select class="form-control" style="width:auto;padding:.4rem .7rem;font-size:.82rem" id="admin-status-filter" onchange="filterAdminVehicles()"><option value="">All Status</option><option value="available">Available</option><option value="sold">Sold</option><option value="reserved">Reserved</option></select>
+            <button class="btn btn-gold btn-sm" onclick="switchTab('addvehicle',null)">+ Add Vehicle</button>
+          </div>
+        </div>
+        <div class="admin-card">
+          <div class="admin-card-header"><h3>All Vehicles (<span id="admin-vehicle-count">0</span>)</h3><button class="btn btn-sm btn-blue" onclick="dlReport('inventory','excel')">Export Excel</button></div>
+          <div style="padding:0"><table class="data-table"><thead><tr><th>VIN</th><th>Vehicle</th><th>Year</th><th>Price</th><th>Mileage</th><th>Status</th><th>Actions</th></tr></thead><tbody id="admin-vehicles-body"><tr><td colspan="7" style="text-align:center;padding:2rem"><div class="spinner"></div></td></tr></tbody></table></div>
+        </div>
+      </div>
+      <!-- ADD VEHICLE -->
+      <div class="admin-tab-panel" id="tab-addvehicle">
+        <div class="admin-topbar"><h1 style="font-family:'Playfair Display',serif">Add New Vehicle</h1></div>
+        <div class="admin-card">
+          <div class="admin-card-header"><h3>Vehicle Details</h3></div>
+          <div class="admin-card-body">
+            <div class="form-row"><div class="form-group"><label>Make</label><select class="form-control" id="av-make"><option>Toyota</option><option>Honda</option><option>Mercedes-Benz</option><option>BMW</option><option>Audi</option><option>Ford</option><option>Nissan</option><option>Mazda</option><option>Kia</option></select></div><div class="form-group"><label>Model</label><input class="form-control" type="text" id="av-model" placeholder="e.g. Land Cruiser"></div></div>
+            <div class="form-row"><div class="form-group"><label>Year</label><input class="form-control" type="number" id="av-year" value="2023"></div><div class="form-group"><label>VIN Number</label><input class="form-control" type="text" id="av-vin" placeholder="JT3HN87R7X4051001"></div></div>
+            <div class="form-row"><div class="form-group"><label>Price (KES)</label><input class="form-control" type="number" id="av-price" placeholder="3500000"></div><div class="form-group"><label>Cost Price (KES)</label><input class="form-control" type="number" id="av-cost" placeholder="3000000"></div></div>
+            <div class="form-row"><div class="form-group"><label>Mileage (km)</label><input class="form-control" type="number" id="av-mileage" value="0"></div><div class="form-group"><label>Color</label><input class="form-control" type="text" id="av-color" placeholder="Pearl White"></div></div>
+            <div class="form-row"><div class="form-group"><label>Fuel Type</label><select class="form-control" id="av-fuel"><option value="petrol">Petrol</option><option value="diesel">Diesel</option><option value="hybrid">Hybrid</option><option value="electric">Electric</option></select></div><div class="form-group"><label>Transmission</label><select class="form-control" id="av-trans"><option value="automatic">Automatic</option><option value="manual">Manual</option></select></div></div>
+            <div class="form-row"><div class="form-group"><label>Body Type</label><select class="form-control" id="av-body"><option value="SUV">SUV</option><option value="Sedan">Sedan</option><option value="Pickup">Pickup</option><option value="Van">Van</option><option value="Hatchback">Hatchback</option></select></div><div class="form-group"><label>Condition</label><select class="form-control" id="av-condition"><option value="new">New</option><option value="used">Used</option><option value="certified">Certified Pre-Owned</option></select></div></div>
+            <div class="form-group"><label>Description</label><textarea class="form-control" id="av-desc" rows="3" placeholder="Describe vehicle features, history..."></textarea></div>
+            <div class="form-row"><div class="form-group"><label>Status</label><select class="form-control" id="av-status"><option value="available">Available</option><option value="reserved">Reserved</option></select></div><div class="form-group"><label>Image URL</label><input class="form-control" type="url" id="av-image" placeholder="https://images.unsplash.com/..."></div></div>
+            <div style="display:flex;gap:1rem;margin-top:.5rem">
+              <button class="btn btn-gold" id="add-vehicle-btn" onclick="submitAddVehicle()">Save Vehicle</button>
+              <button class="btn" style="background:transparent;border:1px solid var(--silver);color:var(--text-mid)" onclick="switchTab('vehicles',null)">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- CUSTOMERS -->
+      <div class="admin-tab-panel" id="tab-customers">
+        <div class="admin-topbar"><h1 style="font-family:'Playfair Display',serif">Customer Management</h1>
+          <div class="admin-topbar-right"><input class="admin-search" placeholder="🔍 Search..." id="customer-search" oninput="searchCustomers()"><button class="btn btn-gold btn-sm" onclick="openModal('add-customer-modal')">+ Add Customer</button></div>
+        </div>
+        <div class="admin-card">
+          <div class="admin-card-header"><h3>All Customers (<span id="customer-count">0</span>)</h3></div>
+          <div style="padding:0"><table class="data-table"><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>City</th><th>Purchases</th><th>Status</th><th>Action</th></tr></thead><tbody id="customers-body"><tr><td colspan="7" style="text-align:center;padding:2rem"><div class="spinner"></div></td></tr></tbody></table></div>
+        </div>
+      </div>
+      <!-- LEADS -->
+      <div class="admin-tab-panel" id="tab-leads">
+        <div class="admin-topbar"><h1 style="font-family:'Playfair Display',serif">Leads &amp; Inquiries</h1>
+          <div class="admin-topbar-right">
+            <select class="form-control" style="width:auto" id="leads-priority-filter" onchange="loadLeads()"><option value="">All Priorities</option><option value="hot">Hot</option><option value="warm">Warm</option><option value="cold">Cold</option></select>
+            <select class="form-control" style="width:auto" id="leads-status-filter" onchange="loadLeads()"><option value="">All Status</option><option value="new">New</option><option value="contacted">Contacted</option><option value="qualified">Qualified</option><option value="won">Won</option></select>
+          </div>
+        </div>
+        <div class="admin-card">
+          <div class="admin-card-header"><h3>Leads (<span id="leads-count">0</span>)</h3></div>
+          <div style="padding:0"><table class="data-table"><thead><tr><th>Name</th><th>Phone</th><th>Vehicle Interest</th><th>Source</th><th>Priority</th><th>Status</th><th>Action</th></tr></thead><tbody id="leads-body"><tr><td colspan="7" style="text-align:center;padding:2rem"><div class="spinner"></div></td></tr></tbody></table></div>
+        </div>
+      </div>
+      <!-- SALES -->
+      <div class="admin-tab-panel" id="tab-sales">
+        <div class="admin-topbar"><h1 style="font-family:'Playfair Display',serif">Sales &amp; Payments</h1>
+          <div class="admin-topbar-right">
+            <select class="form-control" style="width:auto" id="sales-status-filter" onchange="loadSales()"><option value="">All Status</option><option value="paid">Paid</option><option value="partial">Partial</option><option value="pending">Pending</option></select>
+            <button class="btn btn-blue btn-sm" onclick="dlReport('sales','excel')">Export Excel</button>
+          </div>
+        </div>
+        <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:1.5rem">
+          <div class="kpi-card"><div class="kpi-icon" style="background:#fef9ee;width:40px;height:40px;border-radius:4px;display:flex;align-items:center;justify-content:center;margin-bottom:.5rem">📈</div><div class="kpi-value" id="sk-revenue">—</div><div class="kpi-label">Total Revenue</div></div>
+          <div class="kpi-card"><div class="kpi-icon" style="background:#eefaf3;width:40px;height:40px;border-radius:4px;display:flex;align-items:center;justify-content:center;margin-bottom:.5rem">✅</div><div class="kpi-value" id="sk-count">—</div><div class="kpi-label">Total Sales</div></div>
+          <div class="kpi-card"><div class="kpi-icon" style="background:#fff0f0;width:40px;height:40px;border-radius:4px;display:flex;align-items:center;justify-content:center;margin-bottom:.5rem">⏳</div><div class="kpi-value" id="sk-pending">—</div><div class="kpi-label">Pending Payments</div></div>
+        </div>
+        <div class="admin-card">
+          <div class="admin-card-header"><h3>All Transactions (<span id="sales-count">0</span>)</h3></div>
+          <div style="padding:0"><table class="data-table"><thead><tr><th>Invoice</th><th>Customer</th><th>Vehicle</th><th>Amount</th><th>Method</th><th>Date</th><th>Status</th><th>Action</th></tr></thead><tbody id="sales-body"><tr><td colspan="8" style="text-align:center;padding:2rem"><div class="spinner"></div></td></tr></tbody></table></div>
+        </div>
+      </div>
+      <!-- TEST DRIVES -->
+      <div class="admin-tab-panel" id="tab-testdrives">
+        <div class="admin-topbar"><h1 style="font-family:'Playfair Display',serif">Test Drive Bookings</h1><div class="admin-topbar-right"><button class="btn btn-gold btn-sm" onclick="openModal('testdrive-modal')">+ New Booking</button></div></div>
+        <div class="admin-card">
+          <div class="admin-card-header"><h3>Test Drives (<span id="td-count">0</span>)</h3></div>
+          <div style="padding:0"><table class="data-table"><thead><tr><th>Customer</th><th>Vehicle</th><th>Date</th><th>Time</th><th>Salesperson</th><th>Status</th><th>Action</th></tr></thead><tbody id="testdrives-body"><tr><td colspan="7" style="text-align:center;padding:2rem"><div class="spinner"></div></td></tr></tbody></table></div>
+        </div>
+      </div>
+      <!-- FINANCING APPS -->
+      <div class="admin-tab-panel" id="tab-financing-apps">
+        <div class="admin-topbar"><h1 style="font-family:'Playfair Display',serif">Financing Applications</h1>
+          <div class="admin-topbar-right"><select class="form-control" style="width:auto" id="fin-status-filter" onchange="loadFinancing()"><option value="">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select></div>
+        </div>
+        <div class="admin-card">
+          <div class="admin-card-header"><h3>Applications (<span id="fin-count">0</span>)</h3></div>
+          <div style="padding:0"><table class="data-table"><thead><tr><th>Applicant</th><th>Phone</th><th>Vehicle</th><th>Type</th><th>Amount</th><th>Status</th><th>Action</th></tr></thead><tbody id="financing-body"><tr><td colspan="7" style="text-align:center;padding:2rem"><div class="spinner"></div></td></tr></tbody></table></div>
+        </div>
+      </div>
+      <!-- ANALYTICS -->
+      <div class="admin-tab-panel" id="tab-analytics">
+        <div class="admin-topbar"><h1 style="font-family:'Playfair Display',serif">Analytics &amp; Reports</h1><div class="admin-topbar-right"><button class="btn btn-gold btn-sm" onclick="dlReport('sales','excel')">Download Report</button></div></div>
+        <div class="kpi-grid">
+          <div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:#eef2ff">👁</div></div><div class="kpi-value" id="ak-views">—</div><div class="kpi-label">Total Vehicle Views</div></div>
+          <div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:#fef9ee">🔥</div></div><div class="kpi-value" id="ak-leads">—</div><div class="kpi-label">New Leads</div></div>
+          <div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:#eefaf3">📊</div></div><div class="kpi-value" id="ak-sales">—</div><div class="kpi-label">Sales This Month</div></div>
+          <div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:#fff0f0">💰</div></div><div class="kpi-value" id="ak-revenue">—</div><div class="kpi-label">Revenue This Month</div></div>
+        </div>
+        <div class="admin-grid-2" style="margin-top:1.5rem">
+          <div class="admin-card"><div class="admin-card-header"><h3>Revenue by Month</h3></div><div class="admin-card-body"><div class="chart-bars" id="analytics-chart"></div></div></div>
+          <div class="admin-card"><div class="admin-card-header"><h3>Top Viewed Vehicles</h3></div><div class="admin-card-body" id="top-vehicles-list"></div></div>
+        </div>
+      </div>
+      <!-- USERS -->
+      <div class="admin-tab-panel" id="tab-users">
+        <div class="admin-topbar"><h1 style="font-family:'Playfair Display',serif">User Management</h1><div class="admin-topbar-right"><button class="btn btn-gold btn-sm" onclick="openModal('add-user-modal')">+ Add User</button></div></div>
+        <div class="admin-card">
+          <div class="admin-card-header"><h3>Staff Users (<span id="users-count">0</span>)</h3></div>
+          <div style="padding:0"><table class="data-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last Login</th><th>Status</th><th>Action</th></tr></thead><tbody id="users-body"><tr><td colspan="6" style="text-align:center;padding:2rem"><div class="spinner"></div></td></tr></tbody></table></div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<footer id="region-footer" style="display:none">
+  <div class="layout-container">
+    <div class="footer-grid">
+      <div>
+        <div class="site-logo" style="margin-bottom:1rem;cursor:default">
+          <div class="logo-mark">J</div>
+          <div class="logo-text"><span class="logo-name">Joshua &amp; Family</span><span class="logo-sub">Car Dealership</span></div>
+        </div>
+        <p class="footer-tagline">Mombasa's trusted family dealership since 2009. Premium vehicles, transparent pricing, exceptional service.</p>
+        <div class="footer-socials">
+          <span class="social-btn">f</span><span class="social-btn">in</span><span class="social-btn">tw</span><span class="social-btn">wa</span>
+        </div>
+      </div>
+      <div class="footer-col"><h4>Quick Links</h4><ul><li><a onclick="navTo('home',null)">Home</a></li><li><a onclick="navTo('inventory',null)">Inventory</a></li><li><a onclick="navTo('financing',null)">Financing</a></li><li><a onclick="navTo('about',null)">About Us</a></li><li><a onclick="navTo('contact',null)">Contact</a></li></ul></div>
+      <div class="footer-col"><h4>Services</h4><ul><li><a>Vehicle Sales</a></li><li><a>Car Financing</a></li><li><a onclick="openModal('testdrive-modal')">Test Drives</a></li><li><a>After-Sales Service</a></li><li><a>Trade-In</a></li></ul></div>
+      <div class="footer-col"><h4>Contact</h4><ul><li><a>+254 715 187 321</a></li><li><a>kamadijoshua057@gmail.com</a></li><li><a>Miritini, Mombasa</a></li><li><a>Mon–Fri: 8am–7pm</a></li><li><a>Sat–Sun: 9am–5pm</a></li></ul></div>
+    </div>
+    <div class="footer-bottom"><p>© 2024 Joshua and Family Car Dealership. All rights reserved.</p><div class="footer-bottom-links"><a>Privacy Policy</a><a>Terms of Service</a></div></div>
+  </div>
+</footer>
+
+<!-- MODALS -->
+<div class="modal-overlay" id="testdrive-modal">
+  <div class="modal">
+    <div class="modal-header"><h2>Book a Test Drive</h2><button class="modal-close" onclick="closeModal('testdrive-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row"><div class="form-group"><label>First Name</label><input class="form-control" type="text" id="td-first" placeholder="John"></div><div class="form-group"><label>Last Name</label><input class="form-control" type="text" id="td-last" placeholder="Doe"></div></div>
+      <div class="form-group"><label>Phone *</label><input class="form-control" type="tel" id="td-phone" placeholder="+254 700 000 000"></div>
+      <div class="form-group"><label>Vehicle of Interest</label><select class="form-control" id="td-vehicle"><option value="">Select vehicle...</option></select></div>
+      <div class="form-row"><div class="form-group"><label>Preferred Date *</label><input class="form-control" type="date" id="td-date"></div><div class="form-group"><label>Preferred Time</label><select class="form-control" id="td-time"><option value="08:00">8:00 AM</option><option value="10:00">10:00 AM</option><option value="12:00">12:00 PM</option><option value="14:00">2:00 PM</option><option value="16:00">4:00 PM</option></select></div></div>
+    </div>
+    <div class="modal-footer"><button class="btn" style="background:transparent;border:1px solid var(--silver);color:var(--text-mid)" onclick="closeModal('testdrive-modal')">Cancel</button><button class="btn btn-gold" onclick="submitTestDrive()">Book Test Drive</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="inquiry-modal">
+  <div class="modal">
+    <div class="modal-header"><h2>Send an Inquiry</h2><button class="modal-close" onclick="closeModal('inquiry-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row"><div class="form-group"><label>Name *</label><input class="form-control" type="text" id="inq-name" placeholder="Your name"></div><div class="form-group"><label>Phone *</label><input class="form-control" type="tel" id="inq-phone" placeholder="+254 700 000 000"></div></div>
+      <div class="form-group"><label>Email</label><input class="form-control" type="email" id="inq-email" placeholder="your@email.com"></div>
+      <div class="form-group"><label>Message</label><textarea class="form-control" id="inq-message" rows="4" placeholder="Tell us what you're looking for..."></textarea></div>
+    </div>
+    <div class="modal-footer"><button class="btn" style="background:transparent;border:1px solid var(--silver);color:var(--text-mid)" onclick="closeModal('inquiry-modal')">Cancel</button><button class="btn btn-gold" onclick="submitInquiry()">Send Inquiry</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="financing-modal">
+  <div class="modal">
+    <div class="modal-header"><h2>Apply for Financing</h2><button class="modal-close" onclick="closeModal('financing-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row"><div class="form-group"><label>Full Name *</label><input class="form-control" type="text" id="fin-name" placeholder="John Doe"></div><div class="form-group"><label>ID Number *</label><input class="form-control" type="text" id="fin-id" placeholder="12345678"></div></div>
+      <div class="form-row"><div class="form-group"><label>Phone *</label><input class="form-control" type="tel" id="fin-phone" placeholder="+254 700 000 000"></div><div class="form-group"><label>Email</label><input class="form-control" type="email" id="fin-email" placeholder="john@email.com"></div></div>
+      <div class="form-group"><label>Vehicle of Interest</label><input class="form-control" type="text" id="fin-vehicle" placeholder="e.g. Toyota Prado 2022"></div>
+      <div class="form-row"><div class="form-group"><label>Employment Status</label><select class="form-control" id="fin-employment"><option value="employed">Employed</option><option value="self_employed">Self-Employed</option><option value="business_owner">Business Owner</option></select></div><div class="form-group"><label>Monthly Income (KES)</label><input class="form-control" type="number" id="fin-income" placeholder="150000"></div></div>
+      <div class="form-row"><div class="form-group"><label>Financing Type</label><select class="form-control" id="fin-type"><option value="bank_loan">Bank Loan</option><option value="hire_purchase">Hire Purchase</option><option value="mpesa">M-Pesa Finance</option></select></div><div class="form-group"><label>Loan Amount (KES)</label><input class="form-control" type="number" id="fin-amount" placeholder="2500000"></div></div>
+    </div>
+    <div class="modal-footer"><button class="btn" style="background:transparent;border:1px solid var(--silver);color:var(--text-mid)" onclick="closeModal('financing-modal')">Cancel</button><button class="btn btn-gold" onclick="submitFinancing()">Submit Application</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="notif-modal">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-header"><h2>🔔 Notifications</h2><button class="modal-close" onclick="closeModal('notif-modal')">✕</button></div>
+    <div id="notif-list" style="max-height:400px;overflow-y:auto"><div style="text-align:center;padding:2rem;color:var(--text-light)">No notifications</div></div>
+    <div class="modal-footer"><button class="btn btn-sm btn-blue" onclick="markAllRead()">Mark All Read</button><button class="btn btn-sm" style="background:transparent;border:1px solid var(--silver);color:var(--text-mid)" onclick="closeModal('notif-modal')">Close</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="profile-modal">
+  <div class="modal" style="max-width:400px">
+    <div class="modal-header"><h2>My Profile</h2><button class="modal-close" onclick="closeModal('profile-modal')">✕</button></div>
+    <div class="modal-body" id="profile-body"><div style="text-align:center;padding:2rem"><div class="spinner"></div></div></div>
+    <div class="modal-footer"><button class="btn btn-sm" style="background:var(--danger);color:white" onclick="doLogout()">Sign Out</button><button class="btn btn-sm" style="background:transparent;border:1px solid var(--silver);color:var(--text-mid)" onclick="closeModal('profile-modal')">Close</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="add-customer-modal">
+  <div class="modal">
+    <div class="modal-header"><h2>Add Customer</h2><button class="modal-close" onclick="closeModal('add-customer-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row"><div class="form-group"><label>First Name *</label><input class="form-control" id="nc-first" type="text" placeholder="John"></div><div class="form-group"><label>Last Name *</label><input class="form-control" id="nc-last" type="text" placeholder="Doe"></div></div>
+      <div class="form-group"><label>Phone *</label><input class="form-control" id="nc-phone" type="tel" placeholder="+254 700 000 000"></div>
+      <div class="form-group"><label>Email</label><input class="form-control" id="nc-email" type="email" placeholder="john@email.com"></div>
+      <div class="form-row"><div class="form-group"><label>ID Number</label><input class="form-control" id="nc-id" type="text" placeholder="12345678"></div><div class="form-group"><label>City</label><input class="form-control" id="nc-city" type="text" placeholder="Mombasa"></div></div>
+    </div>
+    <div class="modal-footer"><button class="btn" style="background:transparent;border:1px solid var(--silver);color:var(--text-mid)" onclick="closeModal('add-customer-modal')">Cancel</button><button class="btn btn-gold" onclick="submitAddCustomer()">Add Customer</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="add-user-modal">
+  <div class="modal">
+    <div class="modal-header"><h2>Add Staff User</h2><button class="modal-close" onclick="closeModal('add-user-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row"><div class="form-group"><label>First Name *</label><input class="form-control" id="nu-first" type="text" placeholder="John"></div><div class="form-group"><label>Last Name</label><input class="form-control" id="nu-last" type="text" placeholder="Doe"></div></div>
+      <div class="form-group"><label>Email *</label><input class="form-control" id="nu-email" type="email" placeholder="staff@joshuacars.co.ke"></div>
+      <div class="form-group"><label>Phone</label><input class="form-control" id="nu-phone" type="tel" placeholder="+254 700 000 000"></div>
+      <div class="form-row"><div class="form-group"><label>Role *</label><select class="form-control" id="nu-role"><option value="salesperson">Salesperson</option><option value="sales_manager">Sales Manager</option><option value="inventory_manager">Inventory Manager</option><option value="accountant">Accountant</option><option value="admin">Admin</option></select></div><div class="form-group"><label>Password</label><input class="form-control" id="nu-password" type="password" placeholder="Min 8 characters" value="Admin@1234"></div></div>
+    </div>
+    <div class="modal-footer"><button class="btn" style="background:transparent;border:1px solid var(--silver);color:var(--text-mid)" onclick="closeModal('add-user-modal')">Cancel</button><button class="btn btn-gold" onclick="submitAddUser()">Create User</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><div class="toast-title" id="toast-title"></div><div class="toast-msg" id="toast-msg"></div></div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// JOSHUA & FAMILY CAR DEALERSHIP — Frontend JavaScript
+// API calls go to /api/* (same Flask server, same origin)
+// ═══════════════════════════════════════════════════════
+let AUTH_TOKEN = localStorage.getItem('jf_token') || '';
+let CURRENT_USER = null;
+try { CURRENT_USER = JSON.parse(localStorage.getItem('jf_user') || 'null'); } catch(e){}
+let _vehicleCache = [];
+let _invPage = 1;
+
+// ── API helper ──────────────────────────────────────
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (AUTH_TOKEN) opts.headers['Authorization'] = 'Bearer ' + AUTH_TOKEN;
+  if (body) opts.body = JSON.stringify(body);
+  try {
+    const r = await fetch(path, opts);
+    const d = await r.json();
+    return { ok: r.ok, status: r.status, data: d };
+  } catch(e) {
+    return { ok: false, data: { success: false, message: 'Network error: ' + e.message } };
+  }
+}
+const fmt = n => 'KES ' + parseFloat(n || 0).toLocaleString();
+const fmtD = d => d ? new Date(d).toLocaleDateString('en-KE',{day:'numeric',month:'short',year:'numeric'}) : '—';
+const initials = (f,l) => ((f||'?')[0]+(l||'?')[0]).toUpperCase();
+const pill = (s) => {
+  const m = {paid:'pill-available',approved:'pill-available',active:'pill-available',completed:'pill-available',available:'pill-available',confirmed:'pill-reserved',partial:'pill-reserved',pending:'pill-reserved',reserved:'pill-reserved',sold:'pill-sold',rejected:'pill-sold',inactive:'pill-sold',cancelled:'pill-sold'};
+  return `<span class="status-pill ${m[s]||'pill-reserved'}">${s}</span>`;
+};
+
+// ── Init ────────────────────────────────────────────
+window.addEventListener('load', () => {
+  setTimeout(async () => {
+    const l = document.getElementById('app-loading');
+    l.classList.add('fade-out');
+    setTimeout(() => l.style.display = 'none', 500);
+    await init();
+  }, 1800);
+});
+
+async function init() {
+  if (AUTH_TOKEN) {
+    const r = await api('GET', '/api/auth/me');
+    if (r.ok) {
+      CURRENT_USER = r.data.data;
+      localStorage.setItem('jf_user', JSON.stringify(CURRENT_USER));
+      showApp();
+    } else {
+      clearAuth();
+      document.getElementById('auth-screen').classList.add('active');
+    }
+  } else {
+    document.getElementById('auth-screen').classList.add('active');
+  }
+}
+
+function showApp() {
+  document.getElementById('auth-screen').classList.remove('active');
+  document.getElementById('region-header').style.display = 'block';
+  document.getElementById('region-footer').style.display = 'block';
+  updateHeader();
+  loadMakes();
+  loadFeaturedVehicles();
+  loadTDVehicles();
+  calcPayment();
+  showPage('home');
+}
+
+function showAuthScreen() { document.getElementById('auth-screen').classList.add('active'); }
+function enterAsGuest() {
+  document.getElementById('auth-screen').classList.remove('active');
+  document.getElementById('region-header').style.display = 'block';
+  document.getElementById('region-footer').style.display = 'block';
+  loadMakes(); loadFeaturedVehicles(); loadTDVehicles(); calcPayment();
+  showPage('home');
+}
+
+// ── Auth ────────────────────────────────────────────
+function switchAuthTab(tab) {
+  document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.auth-form').forEach(f => f.classList.remove('active'));
+  document.getElementById('auth-' + tab).classList.add('active');
+  const tabs = document.querySelectorAll('.auth-tab');
+  if (tab === 'login') tabs[0].classList.add('active'); else tabs[1].classList.add('active');
+  document.getElementById('auth-error').classList.remove('show');
+}
+
+async function doLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const pass = document.getElementById('login-password').value;
+  if (!email || !pass) return authErr('Please fill in all fields');
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  const r = await api('POST', '/api/auth/login', { email, password: pass });
+  btn.disabled = false; btn.textContent = 'Sign In';
+  if (r.ok) {
+    AUTH_TOKEN = r.data.data.tokens.access;
+    CURRENT_USER = r.data.data.user;
+    localStorage.setItem('jf_token', AUTH_TOKEN);
+    localStorage.setItem('jf_user', JSON.stringify(CURRENT_USER));
+    showApp();
+  } else authErr(r.data.message || 'Login failed');
+}
+
+async function doRegister() {
+  const first = document.getElementById('reg-first').value.trim();
+  const last = document.getElementById('reg-last').value.trim();
+  const email = document.getElementById('reg-email').value.trim();
+  const phone = document.getElementById('reg-phone').value.trim();
+  const pass = document.getElementById('reg-password').value;
+  if (!first || !last || !email || !pass) return authErr('Please fill all required fields');
+  if (pass.length < 8) return authErr('Password must be at least 8 characters');
+  const btn = document.getElementById('register-btn');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  const r = await api('POST', '/api/auth/register', { first_name: first, last_name: last, email, phone, password: pass });
+  btn.disabled = false; btn.textContent = 'Create Account';
+  if (r.ok) {
+    AUTH_TOKEN = r.data.data.tokens.access;
+    CURRENT_USER = r.data.data.user;
+    localStorage.setItem('jf_token', AUTH_TOKEN);
+    localStorage.setItem('jf_user', JSON.stringify(CURRENT_USER));
+    showApp();
+  } else authErr(r.data.errors ? r.data.errors.map(e => e.message).join(', ') : r.data.message);
+}
+
+function authErr(msg) {
+  const el = document.getElementById('auth-error');
+  el.textContent = msg; el.classList.add('show');
+}
+
+function clearAuth() {
+  AUTH_TOKEN = ''; CURRENT_USER = null;
+  localStorage.removeItem('jf_token'); localStorage.removeItem('jf_user');
+}
+
+function doLogout() {
+  clearAuth(); closeModal('profile-modal');
+  document.getElementById('auth-screen').classList.add('active');
+  document.getElementById('region-header').style.display = 'none';
+  showToast('Signed Out', 'You have been signed out successfully.');
+}
+
+function updateHeader() {
+  const chip = document.getElementById('user-chip');
+  const loginBtn = document.getElementById('header-login-btn');
+  const adminBtn = document.getElementById('admin-btn');
+  if (CURRENT_USER) {
+    chip.style.display = 'flex'; loginBtn.style.display = 'none';
+    document.getElementById('user-avatar').textContent = initials(CURRENT_USER.first_name, CURRENT_USER.last_name);
+    document.getElementById('user-name').textContent = CURRENT_USER.first_name;
+    const adminRoles = ['super_admin','admin','sales_manager','salesperson','accountant','inventory_manager'];
+    if (adminRoles.includes(CURRENT_USER.role_name)) adminBtn.style.display = 'inline-flex';
+    loadNotifications();
+  } else {
+    chip.style.display = 'none'; loginBtn.style.display = 'inline-flex';
+  }
+}
+
+// ── Page nav ────────────────────────────────────────
+function showPage(p) {
+  document.querySelectorAll('.page').forEach(x => x.classList.remove('active'));
+  document.getElementById('page-' + p).classList.add('active');
+  const footer = document.getElementById('region-footer');
+  if (footer) footer.style.display = p === 'admin' ? 'none' : 'block';
+  window.scrollTo(0, 0);
+  if (p === 'admin') { loadAdminPage(); }
+  if (p === 'inventory') { _invPage = 1; loadInventory(); }
+}
+
+function navTo(p, el) {
+  showPage(p);
+  document.querySelectorAll('#block-primary-menu a').forEach(a => a.classList.remove('active'));
+  if (el) el.classList.add('active');
+  return false;
+}
+
+// ── Makes ───────────────────────────────────────────
+async function loadMakes() {
+  const r = await api('GET', '/api/vehicles/makes');
+  if (!r.ok) return;
+  ['h-make','inv-make'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    sel.innerHTML = '<option value="">All Makes</option>';
+    r.data.data.forEach(m => sel.innerHTML += `<option value="${m.make}">${m.make} (${m.count})</option>`);
+  });
+}
+
+// ── Vehicle card ────────────────────────────────────
+function vCard(v) {
+  const bc = {available:'badge-new',reserved:'badge-reserved',sold:'badge-sold'}[v.status]||'badge-new';
+  const img = v.primary_image || 'https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?w=500&q=75';
+  return `<div class="vehicle-card">
+    <div class="vehicle-card-img">
+      <img src="${img}" alt="${v.make} ${v.model}" loading="lazy" onerror="this.src='https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?w=400'">
+      <span class="vehicle-badge ${bc}">${v.condition==='new'?'New':'Used'}</span>
+      <button class="vehicle-fav" onclick="toggleWishlist('${v.id}',this)" title="Save to wishlist">♡</button>
+    </div>
+    <div class="vehicle-card-body">
+      <div class="vehicle-make">${v.make}</div>
+      <div class="vehicle-name">${v.year} ${v.model}</div>
+      <div class="vehicle-specs">
+        <span class="vehicle-spec">🕐 ${parseInt(v.mileage||0).toLocaleString()} km</span>
+        <span class="vehicle-spec">⚙️ ${v.transmission||''}</span>
+        <span class="vehicle-spec">⛽ ${v.fuel_type||''}</span>
+      </div>
+    </div>
+    <div class="vehicle-card-footer">
+      <div class="vehicle-price">${fmt(v.price)}<small>${v.status}</small></div>
+      <button class="btn btn-gold btn-sm" onclick="bookTD('${v.id}','${v.year} ${v.make} ${v.model}')">Test Drive</button>
+    </div>
+  </div>`;
+}
+
+async function loadFeaturedVehicles() {
+  let r = await api('GET', '/api/vehicles?featured=true&status=available&limit=6');
+  if (!r.ok || !r.data.data.length) r = await api('GET', '/api/vehicles?status=available&limit=6');
+  const el = document.getElementById('featured-vehicles');
+  if (!el) return;
+  el.innerHTML = (r.ok && r.data.data.length)
+    ? r.data.data.map(vCard).join('')
+    : '<p style="text-align:center;grid-column:1/-1;padding:2rem;color:var(--text-light)">No vehicles available</p>';
+  // Update stats
+  if (r.ok && r.data.pagination) {
+    const total = r.data.pagination.total;
+    const st = document.getElementById('stat-sold');
+    if (st) st.textContent = total > 0 ? total + '+' : '50+';
+  }
+}
+
+async function loadInventory() {
+  _invPage = 1;
+  const params = buildInvParams();
+  const grid = document.getElementById('inventory-grid');
+  if (grid) grid.innerHTML = '<div style="text-align:center;padding:3rem;grid-column:1/-1;color:var(--text-light)"><div class="spinner"></div></div>';
+  const r = await api('GET', '/api/vehicles?' + params + '&page=1&limit=12');
+  if (!r.ok) { if(grid) grid.innerHTML='<p style="text-align:center;grid-column:1/-1;padding:2rem;color:var(--text-light)">Failed to load</p>'; return; }
+  const {data, pagination} = r.data;
+  const cnt = document.getElementById('inv-count');
+  if(cnt) cnt.textContent = pagination.total;
+  if(grid) grid.innerHTML = data.length ? data.map(vCard).join('') : '<p style="text-align:center;grid-column:1/-1;padding:2rem;color:var(--text-light)">No vehicles match your filters</p>';
+  const lmw = document.getElementById('load-more-wrap');
+  if(lmw) lmw.style.display = pagination.page < pagination.pages ? 'block' : 'none';
+}
+
+function buildInvParams() {
+  const make = document.getElementById('inv-make')?.value || '';
+  const cond = document.getElementById('inv-condition')?.value || '';
+  const fuel = document.getElementById('inv-fuel')?.value || '';
+  const price = document.getElementById('inv-price')?.value || '';
+  const sort = document.getElementById('inv-sort')?.value || '';
+  let p = 'status=available';
+  if(make) p += '&make=' + encodeURIComponent(make);
+  if(cond) p += '&condition=' + cond;
+  if(fuel) p += '&fuel_type=' + fuel;
+  if(price) { const [mn,mx]=price.split('-'); p+=`&price_min=${mn}&price_max=${mx}`; }
+  if(sort==='price_asc') p+='&sort=price&order=ASC';
+  else if(sort==='price_desc') p+='&sort=price&order=DESC';
+  else if(sort==='year') p+='&sort=year&order=DESC';
+  return p;
+}
+
+async function loadMoreVehicles() {
+  _invPage++;
+  const btn = document.getElementById('load-more-btn');
+  if(btn) { btn.disabled=true; btn.innerHTML='<span class="spinner"></span>'; }
+  const r = await api('GET', '/api/vehicles?' + buildInvParams() + '&page=' + _invPage + '&limit=12');
+  if(btn) { btn.disabled=false; btn.textContent='Load More Vehicles'; }
+  if(r.ok && r.data.data.length) {
+    document.getElementById('inventory-grid').innerHTML += r.data.data.map(vCard).join('');
+    if(r.data.pagination.page >= r.data.pagination.pages) {
+      const lmw = document.getElementById('load-more-wrap');
+      if(lmw) lmw.style.display = 'none';
+    }
+  }
+}
+
+function doSearch() {
+  navTo('inventory', null);
+  const make = document.getElementById('h-make')?.value;
+  const cond = document.getElementById('h-condition')?.value;
+  const price = document.getElementById('h-price')?.value;
+  if(make && document.getElementById('inv-make')) document.getElementById('inv-make').value = make;
+  if(cond && document.getElementById('inv-condition')) document.getElementById('inv-condition').value = cond;
+  if(price && document.getElementById('inv-price')) document.getElementById('inv-price').value = price;
+  setTimeout(loadInventory, 80);
+}
+
+async function loadTDVehicles() {
+  const r = await api('GET', '/api/vehicles?status=available&limit=50');
+  if(!r.ok) return;
+  const sel = document.getElementById('td-vehicle');
+  if(!sel) return;
+  sel.innerHTML = '<option value="">Select vehicle...</option>';
+  r.data.data.forEach(v => sel.innerHTML += `<option value="${v.id}">${v.year} ${v.make} ${v.model} — ${fmt(v.price)}</option>`);
+}
+
+function bookTD(vid, name) {
+  const sel = document.getElementById('td-vehicle');
+  if(sel) sel.value = vid;
+  openModal('testdrive-modal');
+}
+
+async function toggleWishlist(vid, btn) {
+  if(!AUTH_TOKEN) { showToast('Sign In Required','Please sign in to save vehicles.'); return; }
+  const r = await api('POST', '/api/wishlist/toggle', { vehicle_id: vid });
+  if(r.ok) { btn.textContent = r.data.data.in_wishlist ? '❤️' : '♡'; showToast(r.data.message, ''); }
+}
+
+function calcPayment() {
+  const price = parseFloat(document.getElementById('calc-price')?.value) || 0;
+  const down = parseFloat(document.getElementById('calc-down')?.value) || 0;
+  const months = parseInt(document.getElementById('calc-term')?.value) || 36;
+  const rate = (parseFloat(document.getElementById('calc-rate')?.value) || 13) / 100 / 12;
+  const principal = price - down;
+  const monthly = rate === 0 ? principal/months : principal * rate * Math.pow(1+rate,months) / (Math.pow(1+rate,months)-1);
+  const el = document.getElementById('calc-result');
+  if(el) el.textContent = 'KES ' + Math.round(monthly).toLocaleString();
+}
+
+// ── Form submissions ─────────────────────────────────
+async function submitTestDrive() {
+  const phone = document.getElementById('td-phone').value.trim();
+  const date = document.getElementById('td-date').value;
+  const time = document.getElementById('td-time').value;
+  const vid = document.getElementById('td-vehicle').value;
+  if(!phone || !date) { showToast('Missing Fields','Phone and date are required.'); return; }
+  const body = { scheduled_date: date, scheduled_time: time, notes: 'Customer phone: ' + phone };
+  if(vid) body.vehicle_id = vid;
+  if(CURRENT_USER) body.customer_id = CURRENT_USER.id;
+  const r = await api('POST', '/api/test-drives', body);
+  closeModal('testdrive-modal');
+  showToast(r.ok ? 'Test Drive Booked! 🎉' : 'Booking Failed', r.ok ? "We'll confirm via SMS within 1 hour." : r.data.message);
+}
+
+async function submitInquiry() {
+  const name = document.getElementById('inq-name').value.trim();
+  const phone = document.getElementById('inq-phone').value.trim();
+  const email = document.getElementById('inq-email').value.trim();
+  const msg = document.getElementById('inq-message').value.trim();
+  if(!name || !phone) { showToast('Missing Fields','Name and phone are required.'); return; }
+  const r = await api('POST', '/api/leads', { name, phone, email, message: msg, source: 'website' });
+  closeModal('inquiry-modal');
+  showToast(r.ok ? 'Inquiry Sent ✅' : 'Failed', r.ok ? 'Our team will contact you within 24 hours.' : r.data.message);
+}
+
+async function submitFinancing() {
+  const fn = document.getElementById('fin-name').value.trim();
+  const id_no = document.getElementById('fin-id').value.trim();
+  const phone = document.getElementById('fin-phone').value.trim();
+  if(!fn || !id_no || !phone) { showToast('Missing Fields','Name, ID and phone are required.'); return; }
+  const r = await api('POST', '/api/financing', {
+    full_name: fn, id_number: id_no, phone,
+    email: document.getElementById('fin-email').value.trim(),
+    employment_status: document.getElementById('fin-employment').value,
+    monthly_income: parseFloat(document.getElementById('fin-income').value) || 0,
+    financing_type: document.getElementById('fin-type').value,
+    loan_amount: parseFloat(document.getElementById('fin-amount').value) || 0
+  });
+  closeModal('financing-modal');
+  showToast(r.ok ? 'Application Submitted ✅' : 'Failed', r.ok ? "We'll review and contact you within 24 hours." : r.data.message);
+}
+
+async function submitContact() {
+  const name = (document.getElementById('contact-first').value + ' ' + document.getElementById('contact-last').value).trim();
+  const phone = document.getElementById('contact-phone').value.trim();
+  const msg = document.getElementById('contact-message').value.trim();
+  if(!name || !phone) { showToast('Missing Fields','Name and phone are required.'); return; }
+  const r = await api('POST', '/api/leads', { name, phone, email: document.getElementById('contact-email').value, message: msg, source: 'website', priority: 'warm' });
+  if(r.ok) { showToast('Message Sent ✅',"We'll get back to you within 24 hours."); document.getElementById('contact-message').value=''; }
+  else showToast('Failed', r.data.message);
+}
+
+// ── Admin tabs ───────────────────────────────────────
+function switchTab(t, el) {
+  document.querySelectorAll('.admin-tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.admin-nav-item').forEach(i => i.classList.remove('active'));
+  const p = document.getElementById('tab-' + t);
+  if(p) p.classList.add('active');
+  if(el) el.classList.add('active');
+  const loaders = { dashboard: loadDashboard, vehicles: loadAdminVehicles, customers: loadCustomers,
+    leads: loadLeads, sales: loadSales, testdrives: loadTestDrives, 'financing-apps': loadFinancing,
+    analytics: loadAnalytics, users: loadUsers };
+  if(loaders[t]) loaders[t]();
+}
+
+function loadAdminPage() {
+  if(CURRENT_USER) {
+    const g = document.getElementById('admin-greeting');
+    if(g) g.textContent = `Good day, ${CURRENT_USER.first_name} 👋`;
+  }
+  loadDashboard();
+}
+
+async function loadDashboard() {
+  const r = await api('GET', '/api/dashboard/stats');
+  if(!r.ok) return;
+  const d = r.data.data;
+  const ov = d.overview;
+  document.getElementById('kpi-grid').innerHTML = `
+    <div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:#eef2ff">🚗</div><span class="kpi-badge badge-up">Live</span></div><div class="kpi-value">${ov.available_vehicles}</div><div class="kpi-label">Available Vehicles</div></div>
+    <div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:#fef9ee">💰</div></div><div class="kpi-value">KES ${(ov.revenue_this_month/1e6).toFixed(1)}M</div><div class="kpi-label">Revenue This Month</div></div>
+    <div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:#eefaf3">✅</div></div><div class="kpi-value">${ov.sales_this_month}</div><div class="kpi-label">Sales This Month</div></div>
+    <div class="kpi-card"><div class="kpi-top"><div class="kpi-icon" style="background:#fff0f0">📅</div></div><div class="kpi-value">${ov.pending_test_drives}</div><div class="kpi-label">Pending Test Drives</div></div>`;
+  const maxR = Math.max(...d.monthly_sales.map(m=>m.revenue), 1);
+  document.getElementById('revenue-chart').innerHTML = d.monthly_sales.map((m,i)=>`
+    <div class="chart-bar-wrap">
+      <div class="chart-bar ${i===d.monthly_sales.length-1?'gold':''}" style="height:${Math.max(8,m.revenue/maxR*130)}px"></div>
+      <span class="chart-bar-label">${m.month.slice(0,3)}</span>
+    </div>`).join('') || '<p style="color:var(--text-light);font-size:.8rem">No data</p>';
+  const tot = d.inventory_summary.reduce((a,s)=>a+s.count,0);
+  document.getElementById('inventory-status-chart').innerHTML = d.inventory_summary.map(s=>`
+    <div class="progress-item"><div class="progress-header"><span style="text-transform:capitalize">${s.status}</span><span>${s.count}</span></div>
+    <div class="progress-bar"><div class="progress-fill ${s.status==='available'?'gold':''}" style="width:${tot?Math.round(s.count/tot*100):0}%"></div></div></div>`).join('');
+  document.getElementById('recent-sales-body').innerHTML = d.recent_sales.map(s=>`
+    <tr><td>${s.invoice_number}</td><td>${s.customer_name||'—'}</td><td>${s.make||''} ${s.model||''}</td>
+    <td>${fmt(s.total_amount)}</td><td>${(s.payment_method||'').replace(/_/g,' ')}</td>
+    <td>${pill(s.payment_status)}</td></tr>`).join('') || '<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--text-light)">No recent sales</td></tr>';
+}
+
+async function loadAdminVehicles() {
+  const r = await api('GET', '/api/vehicles?status=&limit=100');
+  if(!r.ok) return;
+  _vehicleCache = r.data.data;
+  document.getElementById('admin-vehicle-count').textContent = _vehicleCache.length;
+  renderVehicleTable(_vehicleCache);
+}
+
+function renderVehicleTable(vehicles) {
+  const sf = document.getElementById('admin-status-filter')?.value || '';
+  const sq = (document.getElementById('vehicle-search-input')?.value || '').toLowerCase();
+  let list = vehicles;
+  if(sf) list = list.filter(v=>v.status===sf);
+  if(sq) list = list.filter(v=>(v.make+v.model+(v.vin||'')).toLowerCase().includes(sq));
+  document.getElementById('admin-vehicles-body').innerHTML = list.map(v=>`
+    <tr><td style="font-family:monospace;font-size:.72rem">${(v.vin||'').slice(0,12)}...</td>
+    <td><strong>${v.make} ${v.model}</strong></td><td>${v.year}</td><td>${fmt(v.price)}</td>
+    <td>${parseInt(v.mileage||0).toLocaleString()} km</td><td>${pill(v.status)}</td>
+    <td style="display:flex;gap:6px">
+      <button class="btn btn-sm btn-blue" onclick="quickEdit('${v.id}','${v.status}')">Edit</button>
+      <button class="btn btn-sm btn-danger" onclick="delVehicle('${v.id}','${v.make} ${v.model}')">Delete</button>
+    </td></tr>`).join('') || '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text-light)">No vehicles found</td></tr>';
+}
+
+function filterAdminVehicles() {
+  if(!_vehicleCache.length) loadAdminVehicles(); else renderVehicleTable(_vehicleCache);
+}
+
+async function quickEdit(vid, cur) {
+  const next = {available:'reserved',reserved:'available',sold:'available',service:'available'}[cur]||'available';
+  if(!confirm(`Change status from "${cur}" to "${next}"?`)) return;
+  const r = await api('PATCH', '/api/vehicles/'+vid, { status: next });
+  if(r.ok) { showToast('Updated ✅','Vehicle status changed.'); _vehicleCache=[]; loadAdminVehicles(); }
+  else showToast('Error', r.data.message);
+}
+
+async function delVehicle(vid, name) {
+  if(!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+  const r = await api('DELETE', '/api/vehicles/'+vid);
+  if(r.ok) { showToast('Deleted',`${name} removed.`); _vehicleCache=[]; loadAdminVehicles(); }
+  else showToast('Cannot Delete', r.data.message);
+}
+
+async function submitAddVehicle() {
+  const vin = document.getElementById('av-vin').value.trim();
+  const model = document.getElementById('av-model').value.trim();
+  const price = document.getElementById('av-price').value;
+  if(!vin||!model||!price) { showToast('Missing Fields','VIN, Model and Price are required.'); return; }
+  const btn = document.getElementById('add-vehicle-btn');
+  btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Saving...';
+  const imgUrl = document.getElementById('av-image').value.trim();
+  const r = await api('POST', '/api/vehicles', {
+    vin, make: document.getElementById('av-make').value,
+    model, year: parseInt(document.getElementById('av-year').value),
+    price: parseFloat(price),
+    cost_price: parseFloat(document.getElementById('av-cost').value)||null,
+    mileage: parseInt(document.getElementById('av-mileage').value)||0,
+    color: document.getElementById('av-color').value,
+    fuel_type: document.getElementById('av-fuel').value,
+    transmission: document.getElementById('av-trans').value,
+    body_type: document.getElementById('av-body').value,
+    condition: document.getElementById('av-condition').value,
+    status: document.getElementById('av-status').value,
+    description: document.getElementById('av-desc').value,
+    images: imgUrl ? [{ url: imgUrl, is_primary: true }] : []
+  });
+  btn.disabled=false; btn.textContent='Save Vehicle';
+  if(r.ok) {
+    showToast('Vehicle Added ✅','New vehicle added to inventory.');
+    ['av-vin','av-model','av-price','av-cost','av-color','av-desc','av-image'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+    _vehicleCache=[]; switchTab('vehicles',null);
+  } else showToast('Error', r.data.errors?r.data.errors.map(e=>e.message).join(', '):r.data.message);
+}
+
+async function loadCustomers() {
+  const q = document.getElementById('customer-search')?.value||'';
+  const r = await api('GET', '/api/customers?limit=50' + (q?'&search='+encodeURIComponent(q):''));
+  if(!r.ok) return;
+  document.getElementById('customer-count').textContent = r.data.pagination.total;
+  document.getElementById('customers-body').innerHTML = r.data.data.map(c=>`
+    <tr><td><strong>${c.first_name} ${c.last_name}</strong></td><td>${c.phone}</td><td>${c.email||'—'}</td>
+    <td>${c.city||'—'}</td><td>${c.purchase_count||0}</td><td>${pill(c.status)}</td>
+    <td><button class="btn btn-sm btn-blue" onclick="showToast('${c.first_name} ${c.last_name}','${c.phone} | ${c.purchase_count||0} purchases')">View</button></td></tr>`).join('') ||
+    '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text-light)">No customers</td></tr>';
+}
+
+function searchCustomers() { clearTimeout(window._cs); window._cs=setTimeout(loadCustomers,400); }
+
+async function submitAddCustomer() {
+  const first=document.getElementById('nc-first').value.trim();
+  const last=document.getElementById('nc-last').value.trim();
+  const phone=document.getElementById('nc-phone').value.trim();
+  if(!first||!last||!phone){showToast('Missing Fields','First name, last name and phone required.');return;}
+  const r=await api('POST','/api/customers',{first_name:first,last_name:last,phone,email:document.getElementById('nc-email').value,id_number:document.getElementById('nc-id').value,city:document.getElementById('nc-city').value});
+  closeModal('add-customer-modal');
+  if(r.ok){showToast('Customer Added ✅',`${first} ${last} added.`);loadCustomers();}
+  else showToast('Error',r.data.message);
+}
+
+async function loadLeads() {
+  const pri=document.getElementById('leads-priority-filter')?.value||'';
+  const sta=document.getElementById('leads-status-filter')?.value||'';
+  let url='/api/leads?limit=50';
+  if(pri) url+='&priority='+pri;
+  if(sta) url+='&status='+sta;
+  const r=await api('GET',url);
+  if(!r.ok) return;
+  document.getElementById('leads-count').textContent=r.data.pagination.total;
+  const pc={hot:'background:#fde8e7;color:#c0392b',warm:'background:#fff4dc;color:#8a5e0a',cold:'background:#eef2ff;color:#4a5568'};
+  document.getElementById('leads-body').innerHTML=r.data.data.map(l=>`
+    <tr><td><strong>${l.name}</strong></td><td>${l.phone}</td>
+    <td>${l.make||''} ${l.model||''}</td><td>${l.source||'—'}</td>
+    <td><span class="status-pill" style="${pc[l.priority]||''}">${l.priority}</span></td>
+    <td>${pill(l.status)}</td>
+    <td><button class="btn btn-sm btn-gold" onclick="contactLead('${l.id}')">Contact</button></td></tr>`).join('') ||
+    '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text-light)">No leads</td></tr>';
+}
+
+async function contactLead(lid) {
+  const r=await api('PATCH','/api/leads/'+lid,{status:'contacted'});
+  if(r.ok){showToast('Lead Updated','Status changed to contacted.');loadLeads();}
+}
+
+async function loadSales() {
+  const sta=document.getElementById('sales-status-filter')?.value||'';
+  const [sr,ar]=await Promise.all([api('GET','/api/sales?limit=50'+(sta?'&payment_status='+sta:'')),api('GET','/api/sales/analytics/summary')]);
+  if(!sr.ok) return;
+  document.getElementById('sales-count').textContent=sr.data.pagination.total;
+  if(ar.ok){const s=ar.data.data.summary;document.getElementById('sk-revenue').textContent=fmt(s.total_revenue||0);document.getElementById('sk-count').textContent=s.total_sales||0;document.getElementById('sk-pending').textContent=s.pending_count||0;}
+  document.getElementById('sales-body').innerHTML=sr.data.data.map(s=>`
+    <tr><td>${s.invoice_number}</td><td>${s.customer_name||'—'}</td><td>${s.make||''} ${s.model||''} ${s.year||''}</td>
+    <td>${fmt(s.total_amount)}</td><td>${(s.payment_method||'').replace(/_/g,' ')}</td>
+    <td>${fmtD(s.sale_date)}</td><td>${pill(s.payment_status)}</td>
+    <td><button class="btn btn-sm btn-blue" onclick="dlInvoice('${s.id}','${s.invoice_number}')">PDF</button></td></tr>`).join('') ||
+    '<tr><td colspan="8" style="text-align:center;padding:2rem;color:var(--text-light)">No sales</td></tr>';
+}
+
+async function dlInvoice(sid, invNo) {
+  showToast('Preparing PDF...','Invoice '+invNo);
+  try {
+    const resp = await fetch('/api/sales/'+sid+'/invoice', { headers: { Authorization: 'Bearer '+AUTH_TOKEN } });
+    if(resp.ok) {
+      const blob = await resp.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = 'invoice-'+invNo+'.pdf'; a.click();
+      URL.revokeObjectURL(a.href);
+      showToast('Downloaded ✅','Invoice '+invNo+' saved.');
+    }
+  } catch(e) { showToast('Error','Download failed'); }
+}
+
+async function loadTestDrives() {
+  const r=await api('GET','/api/test-drives?limit=50');
+  if(!r.ok) return;
+  document.getElementById('td-count').textContent=r.data.data.length;
+  document.getElementById('testdrives-body').innerHTML=r.data.data.map(td=>`
+    <tr><td>${td.customer_name||'—'}</td><td>${td.make||''} ${td.model||''}</td>
+    <td>${td.scheduled_date}</td><td>${td.scheduled_time}</td>
+    <td>${td.salesperson_name||'Unassigned'}</td><td>${pill(td.status)}</td>
+    <td><button class="btn btn-sm btn-blue" onclick="completeTD('${td.id}')">Complete</button></td></tr>`).join('') ||
+    '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text-light)">No test drives</td></tr>';
+}
+
+async function completeTD(id) {
+  const r=await api('PATCH','/api/test-drives/'+id,{status:'completed'});
+  if(r.ok){showToast('Updated','Test drive marked completed.');loadTestDrives();}
+}
+
+async function loadFinancing() {
+  const sta=document.getElementById('fin-status-filter')?.value||'';
+  const r=await api('GET','/api/financing?limit=50'+(sta?'&status='+sta:''));
+  if(!r.ok) return;
+  document.getElementById('fin-count').textContent=r.data.data.length;
+  document.getElementById('financing-body').innerHTML=r.data.data.map(fa=>`
+    <tr><td><strong>${fa.full_name}</strong></td><td>${fa.phone}</td>
+    <td>${fa.make||''} ${fa.model||''}</td>
+    <td>${(fa.financing_type||'').replace(/_/g,' ')}</td>
+    <td>${fmt(fa.loan_amount||0)}</td><td>${pill(fa.status)}</td>
+    <td style="display:flex;gap:4px">
+      <button class="btn btn-sm btn-blue" onclick="approveFA('${fa.id}')">Approve</button>
+      <button class="btn btn-sm btn-danger" onclick="rejectFA('${fa.id}')">Reject</button>
+    </td></tr>`).join('') ||
+    '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text-light)">No applications</td></tr>';
+}
+
+async function approveFA(id){const r=await api('PATCH','/api/financing/'+id+'/status',{status:'approved',notes:'Approved by admin'});if(r.ok){showToast('Approved ✅','Application approved.');loadFinancing();}else showToast('Error',r.data.message);}
+async function rejectFA(id){const r=await api('PATCH','/api/financing/'+id+'/status',{status:'rejected',notes:'Rejected by admin'});if(r.ok){showToast('Rejected','Application rejected.');loadFinancing();}else showToast('Error',r.data.message);}
+
+async function loadAnalytics() {
+  const [dr,ar]=await Promise.all([api('GET','/api/dashboard/stats'),api('GET','/api/sales/analytics/summary')]);
+  if(dr.ok){
+    const d=dr.data.data;
+    const tv=d.top_viewed_vehicles.reduce((a,v)=>a+(v.views_count||0),0);
+    document.getElementById('ak-views').textContent=tv.toLocaleString();
+    document.getElementById('ak-leads').textContent=d.overview.new_leads||0;
+    document.getElementById('ak-sales').textContent=d.overview.sales_this_month||0;
+    document.getElementById('ak-revenue').textContent=fmt(d.overview.revenue_this_month||0);
+    const maxR=Math.max(...d.monthly_sales.map(m=>m.revenue),1);
+    document.getElementById('analytics-chart').innerHTML=d.monthly_sales.map((m,i)=>`
+      <div class="chart-bar-wrap"><div class="chart-bar ${i===d.monthly_sales.length-1?'gold':''}" style="height:${Math.max(8,m.revenue/maxR*130)}px"></div><span class="chart-bar-label">${m.month.slice(0,3)}</span></div>`).join('');
+    document.getElementById('top-vehicles-list').innerHTML=d.top_viewed_vehicles.map(v=>`
+      <div class="progress-item"><div class="progress-header"><span>${v.make} ${v.model} ${v.year}</span><span>${v.views_count||0} views</span></div>
+      <div class="progress-bar"><div class="progress-fill gold" style="width:${Math.min(100,(v.views_count||0)/2)}%"></div></div></div>`).join('') || '<p style="color:var(--text-light)">No data</p>';
+  }
+}
+
+async function loadUsers() {
+  const r=await api('GET','/api/users');
+  if(!r.ok) return;
+  document.getElementById('users-count').textContent=r.data.data.length;
+  document.getElementById('users-body').innerHTML=r.data.data.map(u=>`
+    <tr><td><strong>${u.first_name} ${u.last_name}</strong></td><td>${u.email}</td>
+    <td>${(u.role_name||'').replace(/_/g,' ')}</td><td>${u.last_login?fmtD(u.last_login):'Never'}</td>
+    <td>${pill(u.is_active?'active':'inactive')}</td>
+    <td><button class="btn btn-sm btn-blue" onclick="toggleUser('${u.id}',${u.is_active})">${u.is_active?'Deactivate':'Activate'}</button></td></tr>`).join('') ||
+    '<tr><td colspan="6" style="text-align:center;padding:2rem">No users</td></tr>';
+}
+
+async function toggleUser(uid, active) {
+  const r=await api('PATCH','/api/users/'+uid,{is_active:!active});
+  if(r.ok){showToast('Updated',`User ${!active?'activated':'deactivated'}.`);loadUsers();}
+}
+
+async function submitAddUser() {
+  const first=document.getElementById('nu-first').value.trim();
+  const email=document.getElementById('nu-email').value.trim();
+  const role=document.getElementById('nu-role').value;
+  if(!first||!email||!role){showToast('Missing Fields','Name, email and role are required.');return;}
+  const r=await api('POST','/api/users',{first_name:first,last_name:document.getElementById('nu-last').value.trim(),email,phone:document.getElementById('nu-phone').value.trim(),role_name:role,password:document.getElementById('nu-password').value});
+  closeModal('add-user-modal');
+  if(r.ok){showToast('User Created ✅',`${first} added as ${role.replace(/_/g,' ')}.`);loadUsers();}
+  else showToast('Error',r.data.message);
+}
+
+// ── Reports ──────────────────────────────────────────
+async function dlReport(type, fmt) {
+  showToast('Preparing...','Generating '+fmt.toUpperCase()+' report');
+  try {
+    const url = type==='inventory' ? '/api/reports/inventory?format='+fmt : '/api/reports/sales?format='+fmt;
+    const resp = await fetch(url,{headers:{Authorization:'Bearer '+AUTH_TOKEN}});
+    if(resp.ok) {
+      const blob = await resp.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = type+'-report.'+fmt; a.click();
+      URL.revokeObjectURL(a.href);
+      showToast('Downloaded ✅',type+' report saved.');
+    }
+  } catch(e) { showToast('Error','Download failed'); }
+}
+
+// ── Notifications ─────────────────────────────────────
+async function loadNotifications() {
+  if(!AUTH_TOKEN) return;
+  const r=await api('GET','/api/notifications');
+  if(!r.ok) return;
+  const unread=r.data.unread_count||0;
+  const badge=document.getElementById('notif-badge');
+  if(unread>0){badge.textContent=unread;badge.classList.add('show');}else badge.classList.remove('show');
+  const list=document.getElementById('notif-list');
+  if(!list) return;
+  list.innerHTML=r.data.data.length ? r.data.data.slice(0,10).map(n=>`
+    <div style="padding:.75rem 1.25rem;border-bottom:1px solid var(--silver-light);${!n.is_read?'background:#fef9ee':''}">
+      <div style="font-size:.85rem;font-weight:600;color:var(--text-dark)">${n.title}</div>
+      <div style="font-size:.78rem;color:var(--text-light);margin-top:2px">${n.message}</div>
+      <div style="font-size:.72rem;color:var(--text-light);margin-top:4px">${fmtD(n.created_at)}</div>
+    </div>`).join('') : '<div style="text-align:center;padding:2rem;color:var(--text-light)">No notifications</div>';
+}
+
+async function markAllRead() {
+  await api('PATCH','/api/notifications/read',{});
+  document.getElementById('notif-badge').classList.remove('show');
+  loadNotifications();
+}
+
+// ── Profile modal ─────────────────────────────────────
+document.getElementById('profile-modal').addEventListener('click', () => {
+  if(CURRENT_USER) document.getElementById('profile-body').innerHTML=`
+    <div style="text-align:center;margin-bottom:1.5rem">
+      <div style="width:64px;height:64px;border-radius:50%;background:var(--gold);display:flex;align-items:center;justify-content:center;font-size:1.5rem;font-weight:700;color:var(--deep-blue);margin:0 auto 1rem">${initials(CURRENT_USER.first_name,CURRENT_USER.last_name)}</div>
+      <h3 style="font-size:1.2rem;color:var(--deep-blue)">${CURRENT_USER.first_name} ${CURRENT_USER.last_name}</h3>
+      <p style="font-size:.82rem;color:var(--text-light);text-transform:capitalize">${(CURRENT_USER.role_name||'').replace(/_/g,' ')}</p>
+    </div>
+    <div style="background:var(--off-white);border-radius:var(--radius);padding:1rem;font-size:.88rem">
+      <div style="display:flex;justify-content:space-between;padding:.4rem 0;border-bottom:1px solid var(--silver-light)"><span style="color:var(--text-light)">Email</span><span>${CURRENT_USER.email}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:.4rem 0"><span style="color:var(--text-light)">Phone</span><span>${CURRENT_USER.phone||'—'}</span></div>
+    </div>`;
+});
+
+// ── Modals ───────────────────────────────────────────
+function openModal(id){document.getElementById(id).classList.add('open');document.body.style.overflow='hidden';}
+function closeModal(id){document.getElementById(id).classList.remove('open');document.body.style.overflow='';}
+document.querySelectorAll('.modal-overlay').forEach(o=>o.addEventListener('click',e=>{if(e.target===o)closeModal(o.id);}));
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.modal-overlay.open').forEach(o=>closeModal(o.id));});
+
+// ── Toast ─────────────────────────────────────────────
+function showToast(title, msg) {
+  document.getElementById('toast-title').textContent=title;
+  document.getElementById('toast-msg').textContent=msg;
+  const t=document.getElementById('toast');
+  t.classList.add('show');
+  clearTimeout(window._toast);
+  window._toast=setTimeout(()=>t.classList.remove('show'),4000);
+}
+
+// ── Enter key support ─────────────────────────────────
+['login-email','login-password'].forEach(id=>{
+  const el=document.getElementById(id);
+  if(el) el.addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+});
+
+// ── Set min date ─────────────────────────────────────
+const tdDate=document.getElementById('td-date');
+if(tdDate) tdDate.min=new Date().toISOString().split('T')[0];
+</script>
+</body>
+</html>
+"""
+
+@app.route("/")
+@app.route("/inventory")
+@app.route("/about")
+@app.route("/contact")
+@app.route("/financing")
+@app.route("/admin")
+def serve_frontend():
+    return _FRONTEND_HTML, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+# ─── 404 ─────────────────────────────────────────────
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"success": False, "message": f"Route not found: {request.method} {request.path}"}), 404
+
+@app.errorhandler(405)
+def method_not_allowed(e):
+    return jsonify({"success": False, "message": "Method not allowed"}), 405
+
+@app.errorhandler(500)
+def server_error(e):
+    return jsonify({"success": False, "message": "Internal server error"}), 500
+
+# ─── RUN ─────────────────────────────────────────────
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    debug = os.getenv("FLASK_ENV","development") == "development"
+    print("\n" + "="*54)
+    print("  🚗  Joshua & Family Car Dealership API")
+    print("="*54)
+    print(f"  🟢  Running on http://localhost:{port}")
+    print(f"  📍  API Base: http://localhost:{port}/api")
+    print(f"  🏥  Health:   http://localhost:{port}/health")
+    print("="*54 + "\n")
+    app.run(host="0.0.0.0", port=port, debug=debug)
